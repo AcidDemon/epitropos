@@ -8,10 +8,10 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # katagrapho = {
-    #   url = "github:OWNER/katagrapho";
-    #   inputs.nixpkgs.follows = "nixpkgs";
-    # };
+    katagrapho = {
+      url = "github:AcidDemon/katagrapho";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -20,6 +20,7 @@
       nixpkgs,
       crane,
       rust-overlay,
+      katagrapho,
       ...
     }:
     let
@@ -114,12 +115,11 @@
             version = "0.1.0";
           };
 
-          # Uncomment when katagrapho is published and available as a flake input
-          # vm-test = import ./tests/vm-test.nix {
-          #   inherit pkgs;
-          #   katagraphoFlake = inputs.katagrapho;
-          #   epitroposFlake = self;
-          # };
+          vm-test = import ./tests/vm-test.nix {
+            inherit pkgs;
+            katagraphoFlake = katagrapho;
+            epitroposFlake = self;
+          };
         }
       );
 

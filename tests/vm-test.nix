@@ -12,9 +12,7 @@ pkgs.nixosTest {
 
     services.katagrapho = {
       enable = true;
-      encryption = {
-        required = false;
-      };
+      encryption.required = false;
     };
 
     services.epitropos = {
@@ -33,6 +31,8 @@ pkgs.nixosTest {
       isNormalUser = true;
       password = "testpass";
     };
+
+    environment.systemPackages = [ pkgs.sshpass ];
   };
 
   testScript = ''
@@ -53,6 +53,16 @@ pkgs.nixosTest {
     # Test 2: Verify fd isolation — shell should only have fds 0, 1, 2
     server.succeed(
       "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'ls -la /proc/self/fd | wc -l' | grep -q '^4$'"
+    )
+
+    # Test 3: Verify epitropos is running as session-proxy user (not user, not root)
+    server.succeed(
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'cat /proc/\\$PPID/status | grep -q session-proxy'"
+    )
+
+    # Test 4: Verify user cannot kill epitropos
+    server.succeed(
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'kill -0 \\$PPID 2>&1 | grep -q \"Operation not permitted\"'"
     )
   '';
 }

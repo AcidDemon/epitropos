@@ -1,0 +1,20 @@
+[package]
+name = "epitropos"
+version = "0.1.0"
+edition = "2024"
+description = "PTY-proxy for tamper-proof session recording via PAM"
+license = "MIT"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
+overflow-checks = true

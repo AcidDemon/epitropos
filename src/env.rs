@@ -1,8 +1,3 @@
-/// Environment variable sanitization and shell environment building for epitropos.
-///
-/// Removes dangerous environment variables that could compromise session integrity
-/// and constructs a filtered environment for the user's shell session.
-
 /// Removes dangerous environment variables that could be used for privilege escalation
 /// or process manipulation (LD_* loader hooks, Rust runtime flags, etc.).
 pub fn sanitize() {

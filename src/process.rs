@@ -6,7 +6,6 @@ pub struct UserInfo {
     pub gid: libc::gid_t,
     pub username: String,
     pub shell: String,
-    pub home: String,
 }
 
 /// Look up the calling user's passwd entry and return a `UserInfo`.
@@ -33,19 +32,12 @@ pub fn resolve_caller() -> Result<UserInfo, String> {
             .map_err(|e| format!("pw_shell is invalid UTF-8: {e}"))?
             .to_owned()
     };
-    let home = unsafe {
-        CStr::from_ptr(pw.pw_dir)
-            .to_str()
-            .map_err(|e| format!("pw_dir is invalid UTF-8: {e}"))?
-            .to_owned()
-    };
 
     Ok(UserInfo {
         uid,
         gid: pw.pw_gid,
         username,
         shell,
-        home,
     })
 }
 
@@ -290,7 +282,7 @@ pub fn spawn_shell(
                 crate::pty::close_fds_above(3);
 
                 // Become the target user.
-                if let Err(_) = become_user(user) {
+                if become_user(user).is_err() {
                     libc::_exit(1);
                 }
 

@@ -1,6 +1,5 @@
 /// Structured JSON logging for audit events.
 /// Writes to stderr where journald can pick it up.
-
 pub fn session_start(session_id: &str, username: &str) {
     let timestamp = timestamp_now();
     eprintln!(

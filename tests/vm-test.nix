@@ -1,7 +1,7 @@
 # NixOS VM test for epitropos + katagrapho integration.
 # Run with: nix build .#checks.x86_64-linux.vm-test
 { pkgs, katagraphoFlake, epitroposFlake }:
-pkgs.nixosTest {
+pkgs.testers.nixosTest {
   name = "epitropos-session-recording";
 
   nodes.server = { config, pkgs, ... }: {

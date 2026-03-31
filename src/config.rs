@@ -13,8 +13,8 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub struct General {
     pub katagrapho_path: String,
-    pub session_proxy_uid: u32,
-    pub session_proxy_gid: u32,
+    pub session_proxy_user: String,
+    pub session_proxy_group: String,
     #[serde(default)]
     pub record_input: bool,
 }
@@ -73,8 +73,8 @@ mod tests {
         let toml = r#"
 [general]
 katagrapho_path = "/usr/local/bin/katagrapho"
-session_proxy_uid = 990
-session_proxy_gid = 990
+session_proxy_user = "session-proxy"
+session_proxy_group = "session-proxy"
 record_input = true
 
 [encryption]
@@ -95,8 +95,8 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         let cfg: Config = toml::from_str(toml).expect("should parse full config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/local/bin/katagrapho");
-        assert_eq!(cfg.general.session_proxy_uid, 990);
-        assert_eq!(cfg.general.session_proxy_gid, 990);
+        assert_eq!(cfg.general.session_proxy_user, "session-proxy");
+        assert_eq!(cfg.general.session_proxy_group, "session-proxy");
         assert!(cfg.general.record_input);
 
         assert_eq!(
@@ -121,8 +121,8 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         let toml = r#"
 [general]
 katagrapho_path = "/usr/bin/katagrapho"
-session_proxy_uid = 65534
-session_proxy_gid = 65534
+session_proxy_user = "nobody"
+session_proxy_group = "nogroup"
 
 [encryption]
 recipient_file = "/etc/epitropos/recipients.txt"
@@ -136,8 +136,8 @@ default = "open"
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/bin/katagrapho");
-        assert_eq!(cfg.general.session_proxy_uid, 65534);
-        assert_eq!(cfg.general.session_proxy_gid, 65534);
+        assert_eq!(cfg.general.session_proxy_user, "nobody");
+        assert_eq!(cfg.general.session_proxy_group, "nogroup");
         assert!(!cfg.general.record_input);
 
         assert_eq!(

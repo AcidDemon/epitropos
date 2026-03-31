@@ -20,8 +20,8 @@ let
   configFile = pkgs.writeText "epitropos-config.toml" ''
     [general]
     katagrapho_path = "/run/wrappers/bin/katagrapho"
-    session_proxy_uid = ${toString config.users.users.${cfg.proxyUser}.uid}
-    session_proxy_gid = ${toString config.users.groups.${cfg.proxyGroup}.gid}
+    session_proxy_user = "${cfg.proxyUser}"
+    session_proxy_group = "${cfg.proxyGroup}"
     record_input = ${if cfg.recordInput then "true" else "false"}
 
     [encryption]

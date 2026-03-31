@@ -41,6 +41,26 @@ pub fn resolve_caller() -> Result<UserInfo, String> {
     })
 }
 
+/// Resolve a username to a UID.
+pub fn resolve_uid(username: &str) -> Result<libc::uid_t, String> {
+    let c_name = CString::new(username).map_err(|_| "username contains null byte")?;
+    let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
+    if pw.is_null() {
+        return Err(format!("user '{username}' not found"));
+    }
+    Ok(unsafe { (*pw).pw_uid })
+}
+
+/// Resolve a group name to a GID.
+pub fn resolve_gid(group_name: &str) -> Result<libc::gid_t, String> {
+    let c_name = CString::new(group_name).map_err(|_| "group name contains null byte")?;
+    let gr = unsafe { libc::getgrnam(c_name.as_ptr()) };
+    if gr.is_null() {
+        return Err(format!("group '{group_name}' not found"));
+    }
+    Ok(unsafe { (*gr).gr_gid })
+}
+
 /// Return `true` if `username` appears in the group membership of `group_name`.
 pub fn user_in_group(username: &str, group_name: &str) -> bool {
     let c_group = match CString::new(group_name) {

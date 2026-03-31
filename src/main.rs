@@ -119,7 +119,9 @@ fn run() -> Result<(), String> {
     }
 
     // 15. Drop privileges to session proxy
-    process::drop_privileges(cfg.general.session_proxy_uid, cfg.general.session_proxy_gid)?;
+    let proxy_uid = process::resolve_uid(&cfg.general.session_proxy_user)?;
+    let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
+    process::drop_privileges(proxy_uid, proxy_gid)?;
 
     // 16. Set terminal to raw mode
     let saved_termios = set_raw_mode(0)?;

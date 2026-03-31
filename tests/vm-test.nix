@@ -39,6 +39,15 @@ pkgs.testers.nixosTest {
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
+    # Debug: check config and binaries exist
+    print(server.succeed("cat /etc/epitropos/config.toml"))
+    print(server.succeed("ls -la /run/wrappers/bin/epitropos /run/wrappers/bin/katagrapho"))
+    print(server.succeed("ls -la /var/log/ssh-sessions/"))
+    print(server.succeed("cat /etc/pam.d/sshd"))
+
+    # Debug: try running epitropos directly to see error
+    print(server.succeed("su -s /bin/sh -c '/run/wrappers/bin/epitropos 2>&1 || true' testuser"))
+
     # Test 1: SSH session creates a recording
     server.succeed(
       "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test; exit'"

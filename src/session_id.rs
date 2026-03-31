@@ -3,8 +3,7 @@ use std::io::Read;
 
 pub fn generate() -> Result<String, String> {
     let mut buf = [0u8; 16];
-    let mut f =
-        File::open("/dev/urandom").map_err(|e| format!("cannot open /dev/urandom: {e}"))?;
+    let mut f = File::open("/dev/urandom").map_err(|e| format!("cannot open /dev/urandom: {e}"))?;
     f.read_exact(&mut buf)
         .map_err(|e| format!("cannot read /dev/urandom: {e}"))?;
 

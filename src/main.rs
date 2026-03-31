@@ -152,10 +152,7 @@ fn run() -> Result<(), String> {
 
     // 21. If recording failed, log and run failure hook
     if result.recording_failed {
-        let reason = result
-            .failure_reason
-            .as_deref()
-            .unwrap_or("unknown error");
+        let reason = result.failure_reason.as_deref().unwrap_or("unknown error");
         eprintln!("epitropos: recording failed: {reason}");
         log::recording_interrupted(&session_id, &user.username, reason, 0.0);
         run_failure_hook(&cfg, &session_id, &user.username, &result.failure_reason);
@@ -196,7 +193,9 @@ fn handle_startup_failure(
     match fail_mode {
         FailMode::Closed => Err(format!("session recording failed: {reason}")),
         FailMode::Open => {
-            eprintln!("epitropos: warning: recording unavailable ({reason}), proceeding without recording");
+            eprintln!(
+                "epitropos: warning: recording unavailable ({reason}), proceeding without recording"
+            );
             process::become_user(user)?;
             exec_shell(user)?;
             unreachable!();
@@ -209,11 +208,7 @@ fn exec_shell(user: &process::UserInfo) -> Result<(), String> {
     let c_shell =
         CString::new(user.shell.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
 
-    let base = user
-        .shell
-        .rsplit('/')
-        .next()
-        .unwrap_or(user.shell.as_str());
+    let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
     let login_name = format!("-{base}");
     let c_login_name =
         CString::new(login_name.as_bytes()).map_err(|e| format!("invalid login name: {e}"))?;

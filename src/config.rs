@@ -99,16 +99,16 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         assert_eq!(cfg.general.session_proxy_gid, 990);
         assert!(cfg.general.record_input);
 
-        assert_eq!(cfg.encryption.recipient_file, "/etc/epitropos/recipients.txt");
+        assert_eq!(
+            cfg.encryption.recipient_file,
+            "/etc/epitropos/recipients.txt"
+        );
 
         assert_eq!(cfg.fail_policy.default, FailMode::Closed);
         assert_eq!(cfg.fail_policy.open_for_groups, vec!["wheel", "admins"]);
         assert_eq!(cfg.fail_policy.closed_for_groups, vec!["guests"]);
 
-        assert_eq!(
-            cfg.nesting.always_record_services,
-            vec!["sshd", "login"]
-        );
+        assert_eq!(cfg.nesting.always_record_services, vec!["sshd", "login"]);
 
         assert_eq!(
             cfg.hooks.on_recording_failure,
@@ -140,7 +140,10 @@ default = "open"
         assert_eq!(cfg.general.session_proxy_gid, 65534);
         assert!(!cfg.general.record_input);
 
-        assert_eq!(cfg.encryption.recipient_file, "/etc/epitropos/recipients.txt");
+        assert_eq!(
+            cfg.encryption.recipient_file,
+            "/etc/epitropos/recipients.txt"
+        );
 
         assert_eq!(cfg.fail_policy.default, FailMode::Open);
         assert!(cfg.fail_policy.open_for_groups.is_empty());

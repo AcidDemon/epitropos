@@ -158,17 +158,13 @@ pub fn spawn_katagrapho(
 ) -> Result<(libc::pid_t, RawFd), String> {
     let mut fds: [RawFd; 2] = [-1, -1];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
-        return Err(format!(
-            "pipe2 failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("pipe2 failed: {}", std::io::Error::last_os_error()));
     }
     let (pipe_read, pipe_write) = (fds[0], fds[1]);
 
-    let c_path = CString::new(katagrapho_path)
-        .map_err(|e| format!("invalid katagrapho path: {e}"))?;
-    let c_session_id =
-        CString::new(session_id).map_err(|e| format!("invalid session_id: {e}"))?;
+    let c_path =
+        CString::new(katagrapho_path).map_err(|e| format!("invalid katagrapho path: {e}"))?;
+    let c_session_id = CString::new(session_id).map_err(|e| format!("invalid session_id: {e}"))?;
     let c_recipient_file =
         CString::new(recipient_file).map_err(|e| format!("invalid recipient_file: {e}"))?;
 
@@ -239,11 +235,7 @@ pub fn spawn_shell(
 
     // Derive a login-shell argv0: basename prefixed with '-'.
     let login_name = {
-        let base = user
-            .shell
-            .rsplit('/')
-            .next()
-            .unwrap_or(user.shell.as_str());
+        let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
         format!("-{base}")
     };
     let c_login_name =
@@ -296,8 +288,7 @@ pub fn spawn_shell(
                 }
 
                 // Exec the shell as a login shell.
-                let argv: &[*const libc::c_char] =
-                    &[c_login_name.as_ptr(), std::ptr::null()];
+                let argv: &[*const libc::c_char] = &[c_login_name.as_ptr(), std::ptr::null()];
                 libc::execv(c_shell.as_ptr(), argv.as_ptr());
                 libc::_exit(1);
             }

@@ -46,10 +46,7 @@ impl SignalState {
     pub fn setup() -> Result<Self, String> {
         let mut fds: [RawFd; 2] = [-1, -1];
         if unsafe { libc::pipe2(fds.as_mut_ptr(), O_NONBLOCK | O_CLOEXEC) } < 0 {
-            return Err(format!(
-                "pipe2 failed: {}",
-                std::io::Error::last_os_error()
-            ));
+            return Err(format!("pipe2 failed: {}", std::io::Error::last_os_error()));
         }
         let (pipe_read, pipe_write) = (fds[0], fds[1]);
 

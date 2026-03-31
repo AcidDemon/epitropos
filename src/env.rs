@@ -74,7 +74,10 @@ mod tests {
         unsafe {
             std::env::set_var("LD_PRELOAD", "/some/lib.so");
         }
-        assert_eq!(std::env::var("LD_PRELOAD").ok(), Some("/some/lib.so".to_string()));
+        assert_eq!(
+            std::env::var("LD_PRELOAD").ok(),
+            Some("/some/lib.so".to_string())
+        );
 
         // Call sanitize
         sanitize();
@@ -100,7 +103,10 @@ mod tests {
         let env_map: std::collections::HashMap<String, String> = env.into_iter().collect();
 
         // Verify whitelisted variables are present
-        assert_eq!(env_map.get("HOME").map(|s| s.as_str()), Some("/home/testuser"));
+        assert_eq!(
+            env_map.get("HOME").map(|s| s.as_str()),
+            Some("/home/testuser")
+        );
         assert_eq!(
             env_map.get("TERM").map(|s| s.as_str()),
             Some("xterm-256color")

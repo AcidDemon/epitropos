@@ -30,13 +30,7 @@ impl Write for PipeWriter {
         if buf.is_empty() {
             return Ok(0);
         }
-        let n = unsafe {
-            libc::write(
-                self.fd,
-                buf.as_ptr() as *const libc::c_void,
-                buf.len(),
-            )
-        };
+        let n = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if n < 0 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -80,13 +74,7 @@ fn drain_pty(
 ) {
     let mut buf = [0u8; 65536];
     loop {
-        let n = unsafe {
-            libc::read(
-                pty_master,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
+        let n = unsafe { libc::read(pty_master, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n <= 0 {
             break;
         }

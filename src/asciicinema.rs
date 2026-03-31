@@ -36,8 +36,8 @@ impl Recorder {
             }
         });
 
-        let line = serde_json::to_string(&header)
-            .map_err(|e| format!("JSON serialization error: {e}"))?;
+        let line =
+            serde_json::to_string(&header).map_err(|e| format!("JSON serialization error: {e}"))?;
 
         writeln!(w, "{line}").map_err(|e| format!("write error: {e}"))
     }
@@ -62,8 +62,8 @@ impl Recorder {
 
         let event = serde_json::json!([elapsed, event_type, data]);
 
-        let line = serde_json::to_string(&event)
-            .map_err(|e| format!("JSON serialization error: {e}"))?;
+        let line =
+            serde_json::to_string(&event).map_err(|e| format!("JSON serialization error: {e}"))?;
 
         writeln!(w, "{line}").map_err(|e| format!("write error: {e}"))
     }
@@ -159,9 +159,13 @@ mod tests {
         let mut buf1: Vec<u8> = Vec::new();
         let mut buf2: Vec<u8> = Vec::new();
 
-        recorder.write_output(&mut buf1, b"first").expect("write failed");
+        recorder
+            .write_output(&mut buf1, b"first")
+            .expect("write failed");
         thread::sleep(Duration::from_millis(10));
-        recorder.write_output(&mut buf2, b"second").expect("write failed");
+        recorder
+            .write_output(&mut buf2, b"second")
+            .expect("write failed");
 
         let v1: serde_json::Value =
             serde_json::from_str(String::from_utf8(buf1).unwrap().trim_end()).unwrap();

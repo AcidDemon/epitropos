@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::fs;
 use std::os::unix::io::RawFd;
 
-use libc::{O_NOCTTY, O_RDWR, F_GETFD, F_SETFD, FD_CLOEXEC};
+use libc::{F_GETFD, F_SETFD, FD_CLOEXEC, O_NOCTTY, O_RDWR};
 
 pub struct Pty {
     pub master: RawFd,

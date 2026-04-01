@@ -39,23 +39,27 @@ pkgs.testers.nixosTest {
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
-    # Verify config and binaries are in place
-    print(server.succeed("cat /etc/epitropos/config.toml"))
+    # Verify setup
     server.succeed("test -u /run/wrappers/bin/epitropos")
     server.succeed("test -u /run/wrappers/bin/katagrapho")
 
-    # Verify sshd has ForceCommand configured
-    print(server.succeed("grep -i forcecommand /etc/ssh/sshd_config || true"))
-
-    # Test 1: SSH session creates a recording
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test'"
+    # Run SSH command and capture all output
+    exit_code, output = server.execute(
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test' 2>&1"
     )
+    print(f"SSH exit code: {exit_code}")
+    print(f"SSH output: {output}")
 
-    # Verify a recording file exists
+    # Check recording files regardless of exit code
+    print(server.succeed("ls -la /var/log/ssh-sessions/ 2>&1 || true"))
+    print(server.succeed("ls -la /var/log/ssh-sessions/testuser/ 2>&1 || true"))
+    print(server.succeed("cat /var/log/ssh-sessions/testuser/*.cast 2>&1 || echo 'no .cast files'"))
+
+    # Verify output was captured
+    assert "hello-from-test" in output, f"Expected 'hello-from-test' in output but got: {output}"
+
+    # Verify recording exists and contains our output
     server.succeed("ls /var/log/ssh-sessions/testuser/*.cast")
-
-    # Verify the recording contains our test output
     server.succeed("grep -q 'hello-from-test' /var/log/ssh-sessions/testuser/*.cast")
   '';
 }

@@ -131,8 +131,13 @@ fn run() -> Result<(), String> {
     let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
     process::drop_privileges(proxy_uid, proxy_gid)?;
 
-    // 16. Set terminal to raw mode
-    let saved_termios = set_raw_mode(0)?;
+    // 16. Set terminal to raw mode (only if stdin is a terminal)
+    let is_tty = unsafe { libc::isatty(0) } == 1;
+    let saved_termios = if is_tty {
+        Some(set_raw_mode(0)?)
+    } else {
+        None
+    };
 
     // 17. Run event loop
     let loop_cfg = event_loop::LoopConfig {
@@ -146,8 +151,10 @@ fn run() -> Result<(), String> {
     };
     let result = event_loop::run(&loop_cfg, &signal_state, &recorder);
 
-    // 18. Restore terminal
-    restore_terminal(0, &saved_termios);
+    // 18. Restore terminal (only if we set raw mode)
+    if let Some(ref termios) = saved_termios {
+        restore_terminal(0, termios);
+    }
 
     // 19. Close pipe_write to signal EOF to katagrapho
     unsafe {

@@ -21,7 +21,10 @@ pub struct General {
 
 #[derive(Debug, Deserialize)]
 pub struct Encryption {
+    #[serde(default)]
     pub recipient_file: String,
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +81,7 @@ session_proxy_group = "session-proxy"
 record_input = true
 
 [encryption]
+enabled = true
 recipient_file = "/etc/epitropos/recipients.txt"
 
 [fail_policy]

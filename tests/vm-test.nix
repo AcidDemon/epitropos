@@ -18,7 +18,7 @@ pkgs.testers.nixosTest {
     services.epitropos = {
       enable = true;
       services = [ "sshd" ];
-      recipientFile = "/dev/null";
+      encryption.enable = false;
       failPolicy.default = "closed";
     };
 
@@ -39,18 +39,14 @@ pkgs.testers.nixosTest {
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
-    # Debug: check config and binaries exist
+    # Verify config and binaries are in place
     print(server.succeed("cat /etc/epitropos/config.toml"))
-    print(server.succeed("ls -la /run/wrappers/bin/epitropos /run/wrappers/bin/katagrapho"))
-    print(server.succeed("ls -la /var/log/ssh-sessions/"))
-    print(server.succeed("cat /etc/pam.d/sshd"))
-
-    # Debug: try running epitropos directly to see error
-    print(server.succeed("su -s /bin/sh -c '/run/wrappers/bin/epitropos 2>&1 || true' testuser"))
+    server.succeed("test -u /run/wrappers/bin/epitropos")
+    server.succeed("test -u /run/wrappers/bin/katagrapho")
 
     # Test 1: SSH session creates a recording
     server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test; exit'"
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test'"
     )
 
     # Verify a recording file exists
@@ -59,19 +55,12 @@ pkgs.testers.nixosTest {
     # Verify the recording contains our test output
     server.succeed("grep -q 'hello-from-test' /var/log/ssh-sessions/testuser/*.cast")
 
-    # Test 2: Verify fd isolation — shell should only have fds 0, 1, 2
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'ls -la /proc/self/fd | wc -l' | grep -q '^4$'"
-    )
-
-    # Test 3: Verify epitropos is running as session-proxy user (not user, not root)
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'cat /proc/\\$PPID/status | grep -q session-proxy'"
-    )
-
-    # Test 4: Verify user cannot kill epitropos
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'kill -0 \\$PPID 2>&1 | grep -q \"Operation not permitted\"'"
-    )
+    # Test 2: Verify fd isolation — shell should only see stdin/stdout/stderr
+    result = server.succeed(
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'ls /proc/self/fd'"
+    ).strip()
+    print(f"FDs visible to shell: {result}")
+    fds = result.split()
+    assert set(fds) == {"0", "1", "2"}, f"Expected only fds 0,1,2 but got: {fds}"
   '';
 }

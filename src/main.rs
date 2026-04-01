@@ -67,10 +67,15 @@ fn run() -> Result<(), String> {
     log::session_start(&session_id, &user.username);
 
     // 7. Spawn katagrapho
+    let recipient = if cfg.encryption.enabled {
+        Some(cfg.encryption.recipient_file.as_str())
+    } else {
+        None
+    };
     let (kata_pid, pipe_write) = match process::spawn_katagrapho(
         &cfg.general.katagrapho_path,
         &session_id,
-        &cfg.encryption.recipient_file,
+        recipient,
     ) {
         Ok(v) => v,
         Err(reason) => {

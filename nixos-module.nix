@@ -25,7 +25,8 @@ let
     record_input = ${if cfg.recordInput then "true" else "false"}
 
     [encryption]
-    recipient_file = "${cfg.recipientFile}"
+    enabled = ${if cfg.encryption.enable then "true" else "false"}
+    recipient_file = "${if cfg.encryption.recipientFile != null then cfg.encryption.recipientFile else ""}"
 
     [fail_policy]
     default = "${cfg.failPolicy.default}"
@@ -103,9 +104,18 @@ in
       };
     };
 
-    recipientFile = mkOption {
-      type = types.path;
-      description = "Path to file containing the age public key(s) used to encrypt recordings.";
+    encryption = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether to encrypt recordings with age.";
+      };
+
+      recipientFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "Path to file containing the age public key(s) used to encrypt recordings.";
+      };
     };
 
     recordInput = mkOption {

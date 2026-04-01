@@ -174,7 +174,7 @@ pub fn become_user(user: &UserInfo) -> Result<(), String> {
 pub fn spawn_katagrapho(
     katagrapho_path: &str,
     session_id: &str,
-    recipient_file: &str,
+    recipient_file: Option<&str>,
 ) -> Result<(libc::pid_t, RawFd), String> {
     let mut fds: [RawFd; 2] = [-1, -1];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
@@ -185,14 +185,16 @@ pub fn spawn_katagrapho(
     let c_path =
         CString::new(katagrapho_path).map_err(|e| format!("invalid katagrapho path: {e}"))?;
     let c_session_id = CString::new(session_id).map_err(|e| format!("invalid session_id: {e}"))?;
-    let c_recipient_file =
-        CString::new(recipient_file).map_err(|e| format!("invalid recipient_file: {e}"))?;
 
-    let arg0 = c_path.clone();
-    let arg1 = CString::new("--session-id").unwrap();
-    let arg2 = c_session_id;
-    let arg3 = CString::new("--recipient-file").unwrap();
-    let arg4 = c_recipient_file;
+    // Build argv depending on encryption mode.
+    let encryption_args: Vec<CString> = if let Some(rf) = recipient_file {
+        vec![
+            CString::new("--recipient-file").unwrap(),
+            CString::new(rf).map_err(|e| format!("invalid recipient_file: {e}"))?,
+        ]
+    } else {
+        vec![CString::new("--no-encrypt").unwrap()]
+    };
 
     let pid = unsafe { libc::fork() };
     match pid {
@@ -209,19 +211,22 @@ pub fn spawn_katagrapho(
                 if libc::dup2(pipe_read, libc::STDIN_FILENO) < 0 {
                     libc::_exit(1);
                 }
-                // pipe_read will be closed by O_CLOEXEC on exec; pipe_write also.
-                // (If pipe_read == STDIN_FILENO the dup2 is a no-op but the
-                // CLOEXEC flag is cleared by dup2.)
 
-                let argv: &[*const libc::c_char] = &[
-                    arg0.as_ptr(),
-                    arg1.as_ptr(),
-                    arg2.as_ptr(),
-                    arg3.as_ptr(),
-                    arg4.as_ptr(),
-                    std::ptr::null(),
+                // Build owned argv — all CStrings must live until execv.
+                let arg_session_flag = CString::new("--session-id").unwrap();
+                let mut argv_owned: Vec<&CStr> = vec![
+                    c_path.as_c_str(),
+                    arg_session_flag.as_c_str(),
+                    c_session_id.as_c_str(),
                 ];
-                libc::execv(c_path.as_ptr(), argv.as_ptr());
+                for arg in &encryption_args {
+                    argv_owned.push(arg.as_c_str());
+                }
+                let mut argv_ptrs: Vec<*const libc::c_char> =
+                    argv_owned.iter().map(|c| c.as_ptr()).collect();
+                argv_ptrs.push(std::ptr::null());
+
+                libc::execv(c_path.as_ptr(), argv_ptrs.as_ptr());
                 libc::_exit(1);
             }
         }

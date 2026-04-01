@@ -197,10 +197,7 @@ pub fn run(cfg: &LoopConfig, signals: &SignalState, recorder: &Recorder) -> Loop
                 &mut recording_failed,
                 &mut failure_reason,
             );
-            // Reap the shell if we haven't already.
-            if !shell_exited {
-                shell_exit_code = reap_shell(cfg.shell_pid);
-            }
+            // Mark that we still need to reap (blocking wait at end of loop).
             break 'event_loop;
         }
 
@@ -263,6 +260,21 @@ pub fn run(cfg: &LoopConfig, signals: &SignalState, recorder: &Recorder) -> Loop
                     break 'event_loop;
                 }
             }
+        }
+    }
+
+    // If we haven't successfully reaped the shell yet, do a blocking wait.
+    if !shell_exited {
+        let mut status: libc::c_int = 0;
+        let ret = unsafe { libc::waitpid(cfg.shell_pid, &mut status, 0) };
+        if ret > 0 {
+            shell_exit_code = if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else if libc::WIFSIGNALED(status) {
+                128 + libc::WTERMSIG(status)
+            } else {
+                1
+            };
         }
     }
 

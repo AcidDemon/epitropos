@@ -156,13 +156,11 @@ in
       mode = "0444";
     };
 
-    security.pam.services = lib.genAttrs cfg.services (_svc: {
-      rules.session.epitropos = {
-        order = 10000;
-        control = "required";
-        modulePath = "pam_exec.so";
-        args = [ "/run/wrappers/bin/epitropos" ];
-      };
-    });
+    # For SSH: use ForceCommand to interpose epitropos as the session wrapper.
+    # sshd allocates the PTY and connects it to epitropos's stdin/stdout,
+    # then epitropos creates a nested PTY for the user's actual shell.
+    services.openssh.extraConfig = lib.mkIf (builtins.elem "sshd" cfg.services) ''
+      ForceCommand /run/wrappers/bin/epitropos
+    '';
   };
 }

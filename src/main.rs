@@ -115,8 +115,11 @@ fn run() -> Result<(), String> {
     let signal_state = signals::SignalState::setup()?;
 
     // 13. Fork shell
+    // If SSH_ORIGINAL_COMMAND is set, run that command instead of an interactive shell.
+    let ssh_command = std::env::var("SSH_ORIGINAL_COMMAND").ok();
     let shell_env = env::build_shell_env(&session_id);
-    let shell_pid = process::spawn_shell(slave_fd, &user, &shell_env)?;
+    let shell_pid =
+        process::spawn_shell(slave_fd, &user, &shell_env, ssh_command.as_deref())?;
 
     // 14. Close slave fd in parent
     unsafe {

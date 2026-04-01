@@ -254,17 +254,31 @@ pub fn spawn_shell(
     slave_fd: RawFd,
     user: &UserInfo,
     shell_env: &[(String, String)],
+    command: Option<&str>,
 ) -> Result<libc::pid_t, String> {
     let c_shell =
         CString::new(user.shell.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
 
-    // Derive a login-shell argv0: basename prefixed with '-'.
-    let login_name = {
+    // Build argv depending on whether we have a command to run.
+    let (argv0, extra_args) = if let Some(cmd) = command {
+        // Non-interactive: shell -c "command"
         let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
-        format!("-{base}")
+        (
+            CString::new(base).unwrap_or_else(|_| CString::new("sh").unwrap()),
+            vec![
+                CString::new("-c").unwrap(),
+                CString::new(cmd).unwrap_or_else(|_| CString::new("").unwrap()),
+            ],
+        )
+    } else {
+        // Interactive: login shell with "-bash" style argv0
+        let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
+        (
+            CString::new(format!("-{base}"))
+                .unwrap_or_else(|_| CString::new("-sh").unwrap()),
+            vec![],
+        )
     };
-    let c_login_name =
-        CString::new(login_name.as_bytes()).map_err(|e| format!("invalid login name: {e}"))?;
 
     let pid = unsafe { libc::fork() };
     match pid {
@@ -312,9 +326,13 @@ pub fn spawn_shell(
                     std::env::set_var(k, v);
                 }
 
-                // Exec the shell as a login shell.
-                let argv: &[*const libc::c_char] = &[c_login_name.as_ptr(), std::ptr::null()];
-                libc::execv(c_shell.as_ptr(), argv.as_ptr());
+                // Exec the shell.
+                let mut argv_ptrs: Vec<*const libc::c_char> = vec![argv0.as_ptr()];
+                for arg in &extra_args {
+                    argv_ptrs.push(arg.as_ptr());
+                }
+                argv_ptrs.push(std::ptr::null());
+                libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());
                 libc::_exit(1);
             }
         }

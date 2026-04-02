@@ -110,15 +110,16 @@ fn run() -> Result<(), String> {
     let signal_state = signals::SignalState::setup()?;
 
     // 14. Fork shell
-    // If SSH_ORIGINAL_COMMAND is set, run that command instead of an interactive shell.
-    let ssh_command = std::env::var("SSH_ORIGINAL_COMMAND").ok();
+    // Detect command to run: sshd invokes the login shell as "shell -c command",
+    // so check argv for -c. Also check SSH_ORIGINAL_COMMAND as fallback.
+    let command = detect_command();
     let shell_env = env::build_shell_env(&session_id);
     let shell_pid = process::spawn_shell(
         slave_fd,
         &user,
         &real_shell,
         &shell_env,
-        ssh_command.as_deref(),
+        command.as_deref(),
     )?;
 
     // 14. Close slave fd in parent
@@ -237,6 +238,19 @@ fn exec_shell_path(shell_path: &str) -> Result<(), String> {
         shell_path,
         std::io::Error::last_os_error()
     ))
+}
+
+/// Detect if we were invoked with a command to run.
+/// sshd invokes the login shell as: shell -c "command"
+/// Also check SSH_ORIGINAL_COMMAND as fallback (ForceCommand setups).
+fn detect_command() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    // Check for "-c" "command" in argv (standard shell invocation)
+    if args.len() >= 3 && args[1] == "-c" {
+        return Some(args[2..].join(" "));
+    }
+    // Fallback: SSH_ORIGINAL_COMMAND
+    std::env::var("SSH_ORIGINAL_COMMAND").ok()
 }
 
 /// Set terminal to raw mode, returning the original termios for later restoration.

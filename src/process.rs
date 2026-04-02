@@ -5,7 +5,6 @@ pub struct UserInfo {
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
     pub username: String,
-    pub shell: String,
 }
 
 /// Look up the calling user's passwd entry and return a `UserInfo`.
@@ -26,18 +25,10 @@ pub fn resolve_caller() -> Result<UserInfo, String> {
             .map_err(|e| format!("pw_name is invalid UTF-8: {e}"))?
             .to_owned()
     };
-    let shell = unsafe {
-        CStr::from_ptr(pw.pw_shell)
-            .to_str()
-            .map_err(|e| format!("pw_shell is invalid UTF-8: {e}"))?
-            .to_owned()
-    };
-
     Ok(UserInfo {
         uid,
         gid: pw.pw_gid,
         username,
-        shell,
     })
 }
 
@@ -253,16 +244,17 @@ pub fn spawn_katagrapho(
 pub fn spawn_shell(
     slave_fd: RawFd,
     user: &UserInfo,
+    shell_path: &str,
     shell_env: &[(String, String)],
     command: Option<&str>,
 ) -> Result<libc::pid_t, String> {
     let c_shell =
-        CString::new(user.shell.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
+        CString::new(shell_path.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
 
     // Build argv depending on whether we have a command to run.
     let (argv0, extra_args) = if let Some(cmd) = command {
         // Non-interactive: shell -c "command"
-        let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
+        let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
         (
             CString::new(base).unwrap_or_else(|_| CString::new("sh").unwrap()),
             vec![
@@ -272,10 +264,9 @@ pub fn spawn_shell(
         )
     } else {
         // Interactive: login shell with "-bash" style argv0
-        let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
+        let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
         (
-            CString::new(format!("-{base}"))
-                .unwrap_or_else(|_| CString::new("-sh").unwrap()),
+            CString::new(format!("-{base}")).unwrap_or_else(|_| CString::new("-sh").unwrap()),
             vec![],
         )
     };

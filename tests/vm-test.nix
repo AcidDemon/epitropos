@@ -17,8 +17,14 @@ pkgs.testers.nixosTest {
 
     services.epitropos = {
       enable = true;
-      services = [ "sshd" ];
       encryption.enable = false;
+
+      # Record the testuser — their shell will be replaced with epitropos
+      recordUsers = [ "testuser" ];
+
+      # The real shell to spawn inside the PTY proxy
+      shell.default = "/run/current-system/sw/bin/bash";
+
       failPolicy.default = "closed";
     };
 
@@ -39,6 +45,10 @@ pkgs.testers.nixosTest {
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
+    # Verify setup: epitropos is the user's shell
+    print(server.succeed("getent passwd testuser"))
+    print(server.succeed("cat /etc/epitropos/config.toml"))
+
     # Test 1: SSH command creates a recording and exits cleanly
     server.succeed(
       "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test'"
@@ -52,5 +62,10 @@ pkgs.testers.nixosTest {
 
     # Verify recording is valid asciicinema v2 (has version header)
     server.succeed("head -1 /var/log/ssh-sessions/testuser/*.cast | grep -q '\"version\":2'")
+
+    # Test 2: Verify the real shell (bash) was spawned, not epitropos recursing
+    server.succeed(
+      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo $SHELL'"
+    )
   '';
 }

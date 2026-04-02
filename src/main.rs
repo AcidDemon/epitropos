@@ -10,10 +10,11 @@ mod signals;
 
 // epitropos — PTY-proxy for tamper-proof session recording.
 //
-// Launched by PAM (pam_exec.so) as a session wrapper. Allocates a PTY,
-// spawns the user's shell on the slave side, and bridges all I/O while
-// generating an asciicinema v2 stream piped to katagrapho for encrypted
-// storage.
+// Installed as the user's login shell (replacing /bin/bash etc.).
+// When any login process (sshd, login, su, sudo) spawns the "shell",
+// it runs epitropos instead. Epitropos allocates a nested PTY, spawns
+// the user's real shell (from config) on the slave side, and bridges
+// all I/O while generating an asciicinema v2 stream piped to katagrapho.
 //
 // Runs setuid root during setup to fork the shell as the target user,
 // then drops to an unprivileged session-proxy UID. The recorded user
@@ -41,22 +42,15 @@ fn run() -> Result<(), String> {
     // 3. Resolve calling user
     let user = process::resolve_caller()?;
 
-    // 4. Nesting check: if already inside a session and PAM_SERVICE is not
-    //    in always_record_services, skip recording and just exec the shell.
-    if std::env::var("EPITROPOS_SESSION_ID").is_ok() {
-        let pam_service = std::env::var("PAM_SERVICE").unwrap_or_default();
-        if !cfg
-            .nesting
-            .always_record_services
-            .iter()
-            .any(|s| s == &pam_service)
-        {
-            let existing_session = std::env::var("EPITROPOS_SESSION_ID").unwrap_or_default();
-            log::nesting_skip(&existing_session, &user.username, &pam_service);
-            process::become_user(&user)?;
-            exec_shell(&user)?;
-            unreachable!();
-        }
+    // 4. Nesting check: if already inside a recorded session, skip recording
+    //    and exec the real shell directly. This prevents double-recording when
+    //    the user runs su/sudo inside an already-recorded session.
+    if let Ok(existing_session) = std::env::var("EPITROPOS_SESSION_ID") {
+        let real_shell = cfg.shell.resolve(&user.username);
+        log::nesting_skip(&existing_session, &user.username, "nested");
+        process::become_user(&user)?;
+        exec_shell_path(real_shell)?;
+        unreachable!();
     }
 
     // 5. Determine fail policy
@@ -66,22 +60,23 @@ fn run() -> Result<(), String> {
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
-    // 7. Spawn katagrapho
+    // 7. Resolve real shell from config (epitropos IS the login shell,
+    //    so we need the config to tell us what shell to actually run)
+    let real_shell = cfg.shell.resolve(&user.username).to_string();
+
+    // 8. Spawn katagrapho
     let recipient = if cfg.encryption.enabled {
         Some(cfg.encryption.recipient_file.as_str())
     } else {
         None
     };
-    let (kata_pid, pipe_write) = match process::spawn_katagrapho(
-        &cfg.general.katagrapho_path,
-        &session_id,
-        recipient,
-    ) {
-        Ok(v) => v,
-        Err(reason) => {
-            return handle_startup_failure(fail_mode, &user, &reason);
-        }
-    };
+    let (kata_pid, pipe_write) =
+        match process::spawn_katagrapho(&cfg.general.katagrapho_path, &session_id, recipient) {
+            Ok(v) => v,
+            Err(reason) => {
+                return handle_startup_failure(fail_mode, &user, &real_shell, &reason);
+            }
+        };
 
     // 8. Open PTY
     let pty = match pty::Pty::open() {
@@ -91,7 +86,7 @@ fn run() -> Result<(), String> {
                 libc::kill(kata_pid, libc::SIGTERM);
                 libc::close(pipe_write);
             }
-            return handle_startup_failure(fail_mode, &user, &reason);
+            return handle_startup_failure(fail_mode, &user, &real_shell, &reason);
         }
     };
 
@@ -99,12 +94,12 @@ fn run() -> Result<(), String> {
     let (cols, rows) = pty::get_terminal_size(0).unwrap_or((80, 24));
     let _ = pty::set_terminal_size(pty.master, cols, rows);
 
-    // 10. Create recorder and write header to pipe
+    // 11. Create recorder and write header to pipe
     let recorder = asciicinema::Recorder::new();
     {
         let mut file = unsafe { std::fs::File::from_raw_fd(pipe_write) };
         let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
-        recorder.write_header(&mut file, cols, rows, &user.shell, &term)?;
+        recorder.write_header(&mut file, cols, rows, &real_shell, &term)?;
         std::mem::forget(file); // Don't close the fd
     }
 
@@ -114,12 +109,17 @@ fn run() -> Result<(), String> {
     // 12. Set up signal handlers
     let signal_state = signals::SignalState::setup()?;
 
-    // 13. Fork shell
+    // 14. Fork shell
     // If SSH_ORIGINAL_COMMAND is set, run that command instead of an interactive shell.
     let ssh_command = std::env::var("SSH_ORIGINAL_COMMAND").ok();
     let shell_env = env::build_shell_env(&session_id);
-    let shell_pid =
-        process::spawn_shell(slave_fd, &user, &shell_env, ssh_command.as_deref())?;
+    let shell_pid = process::spawn_shell(
+        slave_fd,
+        &user,
+        &real_shell,
+        &shell_env,
+        ssh_command.as_deref(),
+    )?;
 
     // 14. Close slave fd in parent
     unsafe {
@@ -133,11 +133,7 @@ fn run() -> Result<(), String> {
 
     // 16. Set terminal to raw mode (only if stdin is a terminal)
     let is_tty = unsafe { libc::isatty(0) } == 1;
-    let saved_termios = if is_tty {
-        Some(set_raw_mode(0)?)
-    } else {
-        None
-    };
+    let saved_termios = if is_tty { Some(set_raw_mode(0)?) } else { None };
 
     // 17. Run event loop
     let loop_cfg = event_loop::LoopConfig {
@@ -205,6 +201,7 @@ fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
 fn handle_startup_failure(
     fail_mode: FailMode,
     user: &process::UserInfo,
+    real_shell: &str,
     reason: &str,
 ) -> Result<(), String> {
     match fail_mode {
@@ -214,18 +211,18 @@ fn handle_startup_failure(
                 "epitropos: warning: recording unavailable ({reason}), proceeding without recording"
             );
             process::become_user(user)?;
-            exec_shell(user)?;
+            exec_shell_path(real_shell)?;
             unreachable!();
         }
     }
 }
 
-/// Exec the user's shell as a login shell (argv0 = "-bash" style).
-fn exec_shell(user: &process::UserInfo) -> Result<(), String> {
+/// Exec a shell as a login shell (argv0 = "-bash" style).
+fn exec_shell_path(shell_path: &str) -> Result<(), String> {
     let c_shell =
-        CString::new(user.shell.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
+        CString::new(shell_path.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
 
-    let base = user.shell.rsplit('/').next().unwrap_or(user.shell.as_str());
+    let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
     let login_name = format!("-{base}");
     let c_login_name =
         CString::new(login_name.as_bytes()).map_err(|e| format!("invalid login name: {e}"))?;
@@ -237,7 +234,7 @@ fn exec_shell(user: &process::UserInfo) -> Result<(), String> {
 
     Err(format!(
         "execv({}) failed: {}",
-        user.shell,
+        shell_path,
         std::io::Error::last_os_error()
     ))
 }

@@ -17,12 +17,22 @@ let
     literalExpression
     ;
 
+  # Build the per-user shell overrides TOML fragment.
+  userShellLines = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (name: shell: ''${name} = "${shell}"'') cfg.shell.users
+  );
+
   configFile = pkgs.writeText "epitropos-config.toml" ''
     [general]
     katagrapho_path = "/run/wrappers/bin/katagrapho"
     session_proxy_user = "${cfg.proxyUser}"
     session_proxy_group = "${cfg.proxyGroup}"
     record_input = ${if cfg.recordInput then "true" else "false"}
+
+    [shell]
+    default = "${cfg.shell.default}"
+    [shell.users]
+    ${userShellLines}
 
     [encryption]
     enabled = ${if cfg.encryption.enable then "true" else "false"}
@@ -34,7 +44,7 @@ let
     closed_for_groups = [${lib.concatMapStringsSep ", " (g: ''"${g}"'') cfg.failPolicy.closedForGroups}]
 
     [nesting]
-    always_record_services = [${lib.concatMapStringsSep ", " (s: ''"${s}"'') cfg.alwaysRecord}]
+    always_record_services = []
 
     [hooks]
     on_recording_failure = "${if cfg.onRecordingFailure != null then cfg.onRecordingFailure else ""}"
@@ -63,19 +73,33 @@ in
       description = "System group for the privilege drop target.";
     };
 
-    services = mkOption {
+    # Users whose shell should be replaced with epitropos.
+    recordUsers = mkOption {
       type = types.listOf types.str;
-      default = [
-        "sshd"
-        "login"
-      ];
-      description = "PAM services to attach epitropos to.";
+      default = [ ];
+      description = ''
+        List of usernames whose login shell will be replaced with epitropos.
+        Their real shell is preserved in the epitropos config and spawned
+        inside the recording PTY proxy.
+      '';
     };
 
-    alwaysRecord = mkOption {
-      type = types.listOf types.str;
-      default = [ "sshd" ];
-      description = "PAM services for which session nesting is ignored and recording always happens.";
+    shell = {
+      default = mkOption {
+        type = types.str;
+        default = "/run/current-system/sw/bin/bash";
+        description = "Default real shell for recorded users.";
+      };
+
+      users = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        description = ''
+          Per-user real shell overrides. Automatically populated from
+          users' configured shells when recordUsers is set, but can be
+          extended manually.
+        '';
+      };
     };
 
     failPolicy = {
@@ -156,11 +180,23 @@ in
       mode = "0444";
     };
 
-    # For SSH: use ForceCommand to interpose epitropos as the session wrapper.
-    # sshd allocates the PTY and connects it to epitropos's stdin/stdout,
-    # then epitropos creates a nested PTY for the user's actual shell.
-    services.openssh.extraConfig = lib.mkIf (builtins.elem "sshd" cfg.services) ''
-      ForceCommand /run/wrappers/bin/epitropos
-    '';
+    # Replace each recorded user's shell with epitropos.
+    # Their real shell is saved in the config file so epitropos knows
+    # what to actually spawn inside the PTY.
+    users.users = lib.genAttrs cfg.recordUsers (username: {
+      shell = lib.mkForce "/run/wrappers/bin/epitropos";
+    });
+
+    # Auto-populate per-user shell overrides from the users' originally
+    # configured shells (before our override).
+    services.epitropos.shell.users = lib.genAttrs cfg.recordUsers (username:
+      let
+        userCfg = config.users.users.${username};
+      in
+        # Use the user's configured shell, or fall back to the default.
+        # Since we mkForce the shell above, we need to read the
+        # *declared* default, not the forced value.
+        cfg.shell.default
+    );
   };
 }

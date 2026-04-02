@@ -3,11 +3,33 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub general: General,
+    pub shell: Shell,
     pub encryption: Encryption,
     pub fail_policy: FailPolicy,
-    pub nesting: Nesting,
     #[serde(default)]
     pub hooks: Hooks,
+}
+
+/// Shell configuration — maps users to their real shell.
+/// epitropos replaces the user's login shell, so it needs to know
+/// which shell to actually spawn.
+#[derive(Debug, Deserialize)]
+pub struct Shell {
+    /// Default shell for all recorded users.
+    pub default: String,
+    /// Per-user shell overrides. Key = username, value = shell path.
+    #[serde(default)]
+    pub users: std::collections::HashMap<String, String>,
+}
+
+impl Shell {
+    /// Resolve the real shell for a given username.
+    pub fn resolve(&self, username: &str) -> &str {
+        self.users
+            .get(username)
+            .map(|s| s.as_str())
+            .unwrap_or(&self.default)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,12 +65,6 @@ pub enum FailMode {
     Open,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Nesting {
-    #[serde(default)]
-    pub always_record_services: Vec<String>,
-}
-
 #[derive(Debug, Default, Deserialize)]
 pub struct Hooks {
     #[serde(default)]
@@ -80,6 +96,12 @@ session_proxy_user = "session-proxy"
 session_proxy_group = "session-proxy"
 record_input = true
 
+[shell]
+default = "/bin/bash"
+[shell.users]
+alice = "/bin/zsh"
+bob = "/bin/fish"
+
 [encryption]
 enabled = true
 recipient_file = "/etc/epitropos/recipients.txt"
@@ -88,9 +110,6 @@ recipient_file = "/etc/epitropos/recipients.txt"
 default = "closed"
 open_for_groups = ["wheel", "admins"]
 closed_for_groups = ["guests"]
-
-[nesting]
-always_record_services = ["sshd", "login"]
 
 [hooks]
 on_recording_failure = "/usr/local/bin/notify-failure"
@@ -103,6 +122,11 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         assert_eq!(cfg.general.session_proxy_group, "session-proxy");
         assert!(cfg.general.record_input);
 
+        assert_eq!(cfg.shell.default, "/bin/bash");
+        assert_eq!(cfg.shell.resolve("alice"), "/bin/zsh");
+        assert_eq!(cfg.shell.resolve("bob"), "/bin/fish");
+        assert_eq!(cfg.shell.resolve("unknown"), "/bin/bash");
+
         assert_eq!(
             cfg.encryption.recipient_file,
             "/etc/epitropos/recipients.txt"
@@ -111,8 +135,6 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         assert_eq!(cfg.fail_policy.default, FailMode::Closed);
         assert_eq!(cfg.fail_policy.open_for_groups, vec!["wheel", "admins"]);
         assert_eq!(cfg.fail_policy.closed_for_groups, vec!["guests"]);
-
-        assert_eq!(cfg.nesting.always_record_services, vec!["sshd", "login"]);
 
         assert_eq!(
             cfg.hooks.on_recording_failure,
@@ -127,6 +149,9 @@ on_recording_failure = "/usr/local/bin/notify-failure"
 katagrapho_path = "/usr/bin/katagrapho"
 session_proxy_user = "nobody"
 session_proxy_group = "nogroup"
+
+[shell]
+default = "/bin/sh"
 
 [encryption]
 recipient_file = "/etc/epitropos/recipients.txt"
@@ -144,6 +169,10 @@ default = "open"
         assert_eq!(cfg.general.session_proxy_group, "nogroup");
         assert!(!cfg.general.record_input);
 
+        assert_eq!(cfg.shell.default, "/bin/sh");
+        assert!(cfg.shell.users.is_empty());
+        assert_eq!(cfg.shell.resolve("anyone"), "/bin/sh");
+
         assert_eq!(
             cfg.encryption.recipient_file,
             "/etc/epitropos/recipients.txt"
@@ -152,8 +181,6 @@ default = "open"
         assert_eq!(cfg.fail_policy.default, FailMode::Open);
         assert!(cfg.fail_policy.open_for_groups.is_empty());
         assert!(cfg.fail_policy.closed_for_groups.is_empty());
-
-        assert!(cfg.nesting.always_record_services.is_empty());
 
         assert_eq!(cfg.hooks.on_recording_failure, "");
     }

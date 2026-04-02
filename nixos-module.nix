@@ -159,13 +159,17 @@ in
 
     users.groups.${cfg.proxyGroup} = { };
 
-    users.users.${cfg.proxyUser} = {
-      isSystemUser = true;
-      group = cfg.proxyGroup;
-      description = "Epitropos session proxy (privilege drop target)";
-      home = "/var/empty";
-      shell = "/run/current-system/sw/bin/nologin";
-    };
+    users.users = {
+      ${cfg.proxyUser} = {
+        isSystemUser = true;
+        group = cfg.proxyGroup;
+        description = "Epitropos session proxy (privilege drop target)";
+        home = "/var/empty";
+        shell = "/run/current-system/sw/bin/nologin";
+      };
+    } // lib.genAttrs cfg.recordUsers (_username: {
+      shell = lib.mkForce "/run/wrappers/bin/epitropos";
+    });
 
     security.wrappers.epitropos = {
       source = lib.getExe cfg.package;
@@ -180,23 +184,5 @@ in
       mode = "0444";
     };
 
-    # Replace each recorded user's shell with epitropos.
-    # Their real shell is saved in the config file so epitropos knows
-    # what to actually spawn inside the PTY.
-    users.users = lib.genAttrs cfg.recordUsers (username: {
-      shell = lib.mkForce "/run/wrappers/bin/epitropos";
-    });
-
-    # Auto-populate per-user shell overrides from the users' originally
-    # configured shells (before our override).
-    services.epitropos.shell.users = lib.genAttrs cfg.recordUsers (username:
-      let
-        userCfg = config.users.users.${username};
-      in
-        # Use the user's configured shell, or fall back to the default.
-        # Since we mkForce the shell above, we need to read the
-        # *declared* default, not the forced value.
-        cfg.shell.default
-    );
   };
 }

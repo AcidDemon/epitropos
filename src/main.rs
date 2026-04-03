@@ -1,4 +1,5 @@
 mod asciicinema;
+mod backend;
 mod buffer;
 mod config;
 mod env;
@@ -95,11 +96,45 @@ fn run() -> Result<(), String> {
     };
 
     let recorder = asciicinema::Recorder::new();
+    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
     {
+        // Write header to pipe (katagrapho).
         let mut file = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
         recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta)?;
         std::mem::forget(file);
+    }
+
+    // Write header to additional backends.
+    for wc in &cfg.writers {
+        let mut w: Box<dyn std::io::Write> = match wc {
+            config::WriterConfig::Syslog { facility } => {
+                let fac = match facility.as_str() {
+                    "auth" => libc::LOG_AUTH,
+                    "authpriv" => libc::LOG_AUTHPRIV,
+                    "local0" => libc::LOG_LOCAL0,
+                    "local1" => libc::LOG_LOCAL1,
+                    "local2" => libc::LOG_LOCAL2,
+                    "local3" => libc::LOG_LOCAL3,
+                    "local4" => libc::LOG_LOCAL4,
+                    "local5" => libc::LOG_LOCAL5,
+                    "local6" => libc::LOG_LOCAL6,
+                    "local7" => libc::LOG_LOCAL7,
+                    _ => libc::LOG_AUTHPRIV,
+                };
+                Box::new(backend::SyslogWriter::new("epitropos", fac))
+            }
+            config::WriterConfig::Journal { identifier } => {
+                Box::new(backend::JournaldWriter::new(identifier))
+            }
+            config::WriterConfig::File { path } => match backend::FileWriter::new(path) {
+                Ok(fw) => Box::new(fw),
+                Err(e) => {
+                    eprintln!("epitropos: backend file {path}: {e}");
+                    continue;
+                }
+            },
+        };
+        let _ = recorder.write_header(&mut *w, cols, rows, &real_shell, &term, &meta);
     }
 
     let slave_fd = pty.open_slave()?;

@@ -9,9 +9,36 @@ pub struct Config {
     #[serde(default)]
     pub limit: RateLimit,
     #[serde(default)]
+    pub writers: Vec<WriterConfig>,
+    #[serde(default)]
     pub notice: Notice,
     #[serde(default)]
     pub hooks: Hooks,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WriterConfig {
+    Syslog {
+        #[serde(default = "WriterConfig::default_facility")]
+        facility: String,
+    },
+    Journal {
+        #[serde(default = "WriterConfig::default_ident")]
+        identifier: String,
+    },
+    File {
+        path: String,
+    },
+}
+
+impl WriterConfig {
+    fn default_facility() -> String {
+        "authpriv".to_string()
+    }
+    fn default_ident() -> String {
+        "epitropos".to_string()
+    }
 }
 
 #[derive(Debug, Deserialize)]

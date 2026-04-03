@@ -184,5 +184,10 @@ in
       mode = "0444";
     };
 
+    # Session lock directory (tmpfs).
+    systemd.tmpfiles.rules = [
+      "d /var/run/epitropos 0755 root root -"
+    ];
+
   };
 }

@@ -1,10 +1,66 @@
 use std::ffi::{CStr, CString};
 use std::os::unix::io::RawFd;
 
+const LOCK_DIR: &str = "/var/run/epitropos";
+
 pub struct UserInfo {
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
     pub username: String,
+}
+
+/// Open /dev/null on any closed stdin/stdout/stderr to prevent fd hijacking.
+pub fn sanitize_std_fds() {
+    let devnull = CString::new("/dev/null").unwrap();
+    for fd in 0..=2 {
+        if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+            unsafe {
+                libc::open(devnull.as_ptr(), libc::O_RDWR);
+            }
+        }
+    }
+}
+
+/// Read audit session ID from /proc/self/sessionid. None if unset.
+pub fn get_audit_session_id() -> Option<u32> {
+    let content = std::fs::read_to_string("/proc/self/sessionid").ok()?;
+    let id: u32 = content.trim().parse().ok()?;
+    if id == 4294967295 {
+        return None;
+    }
+    Some(id)
+}
+
+/// Acquire exclusive session lock. Ok(true)=acquired, Ok(false)=already held.
+pub fn try_session_lock(audit_session_id: u32) -> Result<bool, String> {
+    let lock_path = format!("{LOCK_DIR}/session.{audit_session_id}.lock");
+    let c_path = CString::new(lock_path.as_str()).unwrap();
+
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+
+    if fd >= 0 {
+        unsafe { libc::close(fd) };
+        Ok(true)
+    } else {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EEXIST) {
+            Ok(false)
+        } else {
+            Err(format!("session lock at '{}': {}", lock_path, err))
+        }
+    }
+}
+
+/// Remove the session lock file.
+pub fn release_session_lock(audit_session_id: u32) {
+    let lock_path = format!("{LOCK_DIR}/session.{audit_session_id}.lock");
+    let _ = std::fs::remove_file(lock_path);
 }
 
 /// Look up the calling user's passwd entry and return a `UserInfo`.
@@ -119,9 +175,9 @@ pub fn drop_privileges(uid: u32, gid: u32) -> Result<(), String> {
         ));
     }
 
-    // Prevent core dumps from leaking sensitive data.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64);
+        libc::prctl(libc::PR_SET_PTRACER, 0_u64, 0_u64, 0_u64, 0_u64);
     }
 
     Ok(())

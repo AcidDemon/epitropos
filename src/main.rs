@@ -33,30 +33,47 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    // 1. Sanitize environment
+    // 1. Sanitize fds 0/1/2 — prevent fd hijacking if any are closed.
+    process::sanitize_std_fds();
+
+    // 2. Sanitize environment
     env::sanitize();
 
-    // 2. Load configuration
+    // 3. Load configuration
     let cfg = config::load()?;
 
-    // 3. Resolve calling user
+    // 4. Resolve calling user
     let user = process::resolve_caller()?;
 
-    // 4. Nesting check: if already inside a recorded session, skip recording
-    //    and exec the real shell directly. This prevents double-recording when
-    //    the user runs su/sudo inside an already-recorded session.
-    if let Ok(existing_session) = std::env::var("EPITROPOS_SESSION_ID") {
-        let real_shell = cfg.shell.resolve(&user.username);
-        log::nesting_skip(&existing_session, &user.username, "nested");
-        process::become_user(&user)?;
-        exec_shell_path(real_shell)?;
-        unreachable!();
+    // 5. Duplicate session prevention via Linux audit session ID.
+    //    If another epitropos instance already holds the lock for this
+    //    audit session, skip recording and exec the real shell directly.
+    //    This prevents double-recording for su/sudo/subshells.
+    let audit_session_id = process::get_audit_session_id();
+    if let Some(asid) = audit_session_id {
+        match process::try_session_lock(asid) {
+            Ok(true) => {
+                // We acquired the lock — proceed with recording.
+            }
+            Ok(false) => {
+                // Lock held by another instance — skip recording.
+                let real_shell = cfg.shell.resolve(&user.username);
+                log::nesting_skip(&asid.to_string(), &user.username, "audit-session-locked");
+                process::become_user(&user)?;
+                exec_shell_path(real_shell)?;
+                unreachable!();
+            }
+            Err(e) => {
+                // Lock dir missing or other error — proceed anyway (fail-open for locking).
+                eprintln!("epitropos: session lock warning: {e}");
+            }
+        }
     }
 
-    // 5. Determine fail policy
+    // 6. Determine fail policy
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
 
-    // 6. Generate session ID
+    // 7. Generate session ID
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
@@ -172,7 +189,12 @@ fn run() -> Result<(), String> {
         run_failure_hook(&cfg, &session_id, &user.username, &result.failure_reason);
     }
 
-    // 22. Exit with shell's exit code
+    // 22. Release session lock
+    if let Some(asid) = audit_session_id {
+        process::release_session_lock(asid);
+    }
+
+    // 23. Exit with shell's exit code
     log::session_end(&session_id, &user.username, 0.0, result.shell_exit_code);
     std::process::exit(result.shell_exit_code);
 }

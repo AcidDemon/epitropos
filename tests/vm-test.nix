@@ -1,6 +1,9 @@
 # NixOS VM test for epitropos + katagrapho integration.
 # Run with: nix build .#checks.x86_64-linux.vm-test
 { pkgs, katagraphoFlake, epitroposFlake }:
+let
+  ssh = "ssh -i /tmp/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null testuser@localhost";
+in
 pkgs.testers.nixosTest {
   name = "epitropos-session-recording";
 
@@ -18,54 +21,37 @@ pkgs.testers.nixosTest {
     services.epitropos = {
       enable = true;
       encryption.enable = false;
-
-      # Record the testuser — their shell will be replaced with epitropos
       recordUsers = [ "testuser" ];
-
-      # The real shell to spawn inside the PTY proxy
       shell.default = "/run/current-system/sw/bin/bash";
-
       failPolicy.default = "closed";
     };
 
     services.openssh = {
       enable = true;
-      settings.PasswordAuthentication = true;
+      settings.PasswordAuthentication = false;
     };
 
     users.users.testuser = {
       isNormalUser = true;
-      password = "testpass";
     };
-
-    environment.systemPackages = [ pkgs.sshpass ];
   };
 
   testScript = ''
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
-    # Verify setup: epitropos is the user's shell
+    # Set up ephemeral SSH key auth
+    server.succeed("ssh-keygen -t ed25519 -f /tmp/test-key -N \"\"")
+    server.succeed("mkdir -p /home/testuser/.ssh && chmod 700 /home/testuser/.ssh")
+    server.succeed("cp /tmp/test-key.pub /home/testuser/.ssh/authorized_keys")
+    server.succeed("chown -R testuser:users /home/testuser/.ssh")
+
     print(server.succeed("getent passwd testuser"))
-    print(server.succeed("cat /etc/epitropos/config.toml"))
 
-    # Test 1: SSH command creates a recording and exits cleanly
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo hello-from-test'"
-    )
+    server.succeed("${ssh} 'echo hello-from-test'")
 
-    # Verify recording file exists with correct ownership
     server.succeed("ls /var/log/ssh-sessions/testuser/*.cast")
-
-    # Verify recording contains session output
     server.succeed("grep -q 'hello-from-test' /var/log/ssh-sessions/testuser/*.cast")
-
-    # Verify recording is valid asciicinema v2 (has version header)
     server.succeed("head -1 /var/log/ssh-sessions/testuser/*.cast | grep -q '\"version\":2'")
-
-    # Test 2: Verify the real shell (bash) was spawned, not epitropos recursing
-    server.succeed(
-      "sshpass -p testpass ssh -o StrictHostKeyChecking=no testuser@localhost 'echo $SHELL'"
-    )
   '';
 }

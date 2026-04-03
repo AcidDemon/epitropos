@@ -43,8 +43,8 @@ let
     open_for_groups = [${lib.concatMapStringsSep ", " (g: ''"${g}"'') cfg.failPolicy.openForGroups}]
     closed_for_groups = [${lib.concatMapStringsSep ", " (g: ''"${g}"'') cfg.failPolicy.closedForGroups}]
 
-    [nesting]
-    always_record_services = []
+    [notice]
+    text = "${cfg.noticeText}"
 
     [hooks]
     on_recording_failure = "${if cfg.onRecordingFailure != null then cfg.onRecordingFailure else ""}"
@@ -146,6 +146,12 @@ in
       type = types.bool;
       default = false;
       description = "Whether to record terminal input in addition to output.";
+    };
+
+    noticeText = mkOption {
+      type = types.str;
+      default = "\\nATTENTION! Your session is being recorded!\\n\\n";
+      description = "Banner shown before recording starts. Empty string to disable.";
     };
 
     onRecordingFailure = mkOption {

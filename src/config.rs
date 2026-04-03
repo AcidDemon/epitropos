@@ -7,7 +7,29 @@ pub struct Config {
     pub encryption: Encryption,
     pub fail_policy: FailPolicy,
     #[serde(default)]
+    pub notice: Notice,
+    #[serde(default)]
     pub hooks: Hooks,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Notice {
+    #[serde(default = "Notice::default_text")]
+    pub text: String,
+}
+
+impl Notice {
+    fn default_text() -> String {
+        "\nATTENTION! Your session is being recorded!\n\n".to_string()
+    }
+}
+
+impl Default for Notice {
+    fn default() -> Self {
+        Notice {
+            text: Self::default_text(),
+        }
+    }
 }
 
 /// Shell configuration — maps users to their real shell.

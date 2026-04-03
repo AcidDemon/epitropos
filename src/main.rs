@@ -77,9 +77,9 @@ fn run() -> Result<(), String> {
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
-    // 7. Resolve real shell from config (epitropos IS the login shell,
-    //    so we need the config to tell us what shell to actually run)
-    let real_shell = cfg.shell.resolve(&user.username).to_string();
+    // 7. Resolve real shell: argv0 symlink encoding overrides config.
+    let real_shell =
+        decode_shell_from_argv0().unwrap_or_else(|| cfg.shell.resolve(&user.username).to_string());
 
     // 8. Spawn katagrapho
     let recipient = if cfg.encryption.enabled {
@@ -111,13 +111,29 @@ fn run() -> Result<(), String> {
     let (cols, rows) = pty::get_terminal_size(0).unwrap_or((80, 24));
     let _ = pty::set_terminal_size(pty.master, cols, rows);
 
-    // 11. Create recorder and write header to pipe
+    // 10. Print notice banner
+    if !cfg.notice.text.is_empty() {
+        let is_tty = unsafe { libc::isatty(1) } == 1;
+        if is_tty {
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), cfg.notice.text.as_bytes());
+        }
+    }
+
+    // 11. Build recording metadata
+    let meta = asciicinema::Metadata {
+        hostname: asciicinema::get_hostname(),
+        boot_id: asciicinema::get_boot_id(),
+        audit_session_id,
+        recording_id: session_id.clone(),
+    };
+
+    // 12. Create recorder and write header to pipe
     let recorder = asciicinema::Recorder::new();
     {
         let mut file = unsafe { std::fs::File::from_raw_fd(pipe_write) };
         let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
-        recorder.write_header(&mut file, cols, rows, &real_shell, &term)?;
-        std::mem::forget(file); // Don't close the fd
+        recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta)?;
+        std::mem::forget(file);
     }
 
     // 11. Open slave side of PTY
@@ -131,13 +147,8 @@ fn run() -> Result<(), String> {
     // so check argv for -c. Also check SSH_ORIGINAL_COMMAND as fallback.
     let command = detect_command();
     let shell_env = env::build_shell_env(&session_id);
-    let shell_pid = process::spawn_shell(
-        slave_fd,
-        &user,
-        &real_shell,
-        &shell_env,
-        command.as_deref(),
-    )?;
+    let shell_pid =
+        process::spawn_shell(slave_fd, &user, &real_shell, &shell_env, command.as_deref())?;
 
     // 14. Close slave fd in parent
     unsafe {
@@ -262,9 +273,39 @@ fn exec_shell_path(shell_path: &str) -> Result<(), String> {
     ))
 }
 
+/// Decode shell path from argv[0] if it contains "-shell-".
+/// e.g. "epitropos-shell-bin-zsh" -> "/bin/zsh"
+/// Encoding: / becomes -, literal - is \-, literal \ is \\.
+fn decode_shell_from_argv0() -> Option<String> {
+    let argv0 = std::env::args().next()?;
+    let basename = argv0.rsplit('/').next().unwrap_or(&argv0);
+    let marker = "-shell-";
+    let idx = basename.find(marker)?;
+    let encoded = &basename[idx + marker.len()..];
+    if encoded.is_empty() {
+        return None;
+    }
+
+    let mut decoded = String::new();
+    let mut chars = encoded.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                if let Some(&next) = chars.peek() {
+                    decoded.push(next);
+                    chars.next();
+                }
+            }
+            '-' => decoded.push('/'),
+            _ => decoded.push(ch),
+        }
+    }
+    Some(decoded)
+}
+
 /// Detect if we were invoked with a command to run.
 /// sshd invokes the login shell as: shell -c "command"
-/// Also check SSH_ORIGINAL_COMMAND as fallback (ForceCommand setups).
+/// Also check SSH_ORIGINAL_COMMAND as fallback.
 fn detect_command() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     // Check for "-c" "command" in argv (standard shell invocation)

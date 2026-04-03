@@ -8,6 +8,7 @@ mod pty;
 mod rate_limit;
 mod session_id;
 mod signals;
+mod utmp;
 
 // epitropos — PTY-proxy for tamper-proof session recording.
 //
@@ -151,12 +152,9 @@ fn run() -> Result<(), String> {
     let shell_pid =
         process::spawn_shell(slave_fd, &user, &real_shell, &shell_env, command.as_deref())?;
 
-    // 14. Close slave fd in parent
-    unsafe {
-        libc::close(slave_fd);
-    }
+    unsafe { libc::close(slave_fd) };
+    utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
 
-    // 15. Drop privileges to session proxy
     let proxy_uid = process::resolve_uid(&cfg.general.session_proxy_user)?;
     let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
     process::drop_privileges(proxy_uid, proxy_gid)?;
@@ -204,6 +202,7 @@ fn run() -> Result<(), String> {
     }
 
     // 22. Release session lock
+    utmp::remove_entry(&pty.slave_path, shell_pid);
     if let Some(asid) = audit_session_id {
         process::release_session_lock(asid);
     }

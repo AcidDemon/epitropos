@@ -327,62 +327,65 @@ pub fn spawn_shell(
         )
     };
 
+    // PID namespace: unshare before fork so the child is PID 1 in a new ns.
+    // Fail silently if unsupported (UID separation still protects us).
+    let has_pidns = unsafe { libc::unshare(libc::CLONE_NEWPID) } == 0;
+
     let pid = unsafe { libc::fork() };
     match pid {
         -1 => Err(format!("fork failed: {}", std::io::Error::last_os_error())),
-        0 => {
-            // Child process — use _exit on any error.
-            unsafe {
-                // New session so we can acquire a controlling terminal.
-                if libc::setsid() < 0 {
-                    libc::_exit(1);
+        0 => unsafe {
+            if has_pidns {
+                // Private mount ns so we can remount /proc for the new PID ns.
+                if libc::unshare(libc::CLONE_NEWNS) == 0 {
+                    let proc = c"/proc";
+                    let ptype = c"proc";
+                    libc::mount(
+                        ptype.as_ptr(),
+                        proc.as_ptr(),
+                        ptype.as_ptr(),
+                        0,
+                        std::ptr::null(),
+                    );
                 }
+            }
 
-                // Make the PTY slave our controlling terminal.
-                if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
-                    libc::_exit(1);
-                }
-
-                // Wire slave to stdin / stdout / stderr.
-                if libc::dup2(slave_fd, 0) < 0
-                    || libc::dup2(slave_fd, 1) < 0
-                    || libc::dup2(slave_fd, 2) < 0
-                {
-                    libc::_exit(1);
-                }
-
-                // Close the original slave fd if it is not one of 0/1/2.
-                if slave_fd > 2 {
-                    libc::close(slave_fd);
-                }
-
-                // Close all other open fds.
-                crate::pty::close_fds_above(3);
-
-                // Become the target user.
-                if become_user(user).is_err() {
-                    libc::_exit(1);
-                }
-
-                // Clear the environment and populate from shell_env.
-                // SAFETY: we are single-threaded in the child at this point.
-                for (key, _) in std::env::vars_os() {
-                    std::env::remove_var(&key);
-                }
-                for (k, v) in shell_env {
-                    std::env::set_var(k, v);
-                }
-
-                // Exec the shell.
-                let mut argv_ptrs: Vec<*const libc::c_char> = vec![argv0.as_ptr()];
-                for arg in &extra_args {
-                    argv_ptrs.push(arg.as_ptr());
-                }
-                argv_ptrs.push(std::ptr::null());
-                libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());
+            if libc::setsid() < 0 {
                 libc::_exit(1);
             }
-        }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
+                libc::_exit(1);
+            }
+            if libc::dup2(slave_fd, 0) < 0
+                || libc::dup2(slave_fd, 1) < 0
+                || libc::dup2(slave_fd, 2) < 0
+            {
+                libc::_exit(1);
+            }
+            if slave_fd > 2 {
+                libc::close(slave_fd);
+            }
+            crate::pty::close_fds_above(3);
+
+            if become_user(user).is_err() {
+                libc::_exit(1);
+            }
+
+            for (key, _) in std::env::vars_os() {
+                std::env::remove_var(&key);
+            }
+            for (k, v) in shell_env {
+                std::env::set_var(k, v);
+            }
+
+            let mut argv_ptrs: Vec<*const libc::c_char> = vec![argv0.as_ptr()];
+            for arg in &extra_args {
+                argv_ptrs.push(arg.as_ptr());
+            }
+            argv_ptrs.push(std::ptr::null());
+            libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());
+            libc::_exit(1);
+        },
         child_pid => Ok(child_pid),
     }
 }

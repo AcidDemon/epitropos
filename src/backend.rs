@@ -1,6 +1,32 @@
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 
+pub struct MultiWriter {
+    writers: Vec<Box<dyn Write>>,
+}
+
+impl MultiWriter {
+    pub fn new(writers: Vec<Box<dyn Write>>) -> Self {
+        MultiWriter { writers }
+    }
+}
+
+impl Write for MultiWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for w in &mut self.writers {
+            w.write_all(buf)?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        for w in &mut self.writers {
+            w.flush()?;
+        }
+        Ok(())
+    }
+}
+
 pub struct SyslogWriter {
     initialized: bool,
 }

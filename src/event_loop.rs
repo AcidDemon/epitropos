@@ -91,6 +91,7 @@ pub fn run(
     recorder: &Recorder,
     rate_limiter: &mut RateLimiter,
     writer: &mut FlushBuffer,
+    extra: &mut dyn std::io::Write,
 ) -> LoopResult {
     let mut shell_exit_code: i32 = 0;
     let mut recording_failed = false;
@@ -147,6 +148,7 @@ pub fn run(
                             failure_reason = Some(e);
                             break 'event_loop;
                         }
+                        let _ = recorder.write_resize(extra, cols, rows);
                     }
                 }
             }
@@ -208,6 +210,7 @@ pub fn run(
                     failure_reason = Some(e);
                     break 'event_loop;
                 }
+                let _ = recorder.write_output(extra, data);
             }
         }
 
@@ -240,6 +243,7 @@ pub fn run(
                     failure_reason = Some(e);
                     break 'event_loop;
                 }
+                let _ = recorder.write_input(extra, data);
             }
         }
 

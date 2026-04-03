@@ -105,22 +105,11 @@ fn run() -> Result<(), String> {
     }
 
     // Write header to additional backends.
+    let mut extra_writers: Vec<Box<dyn std::io::Write>> = Vec::new();
     for wc in &cfg.writers {
-        let mut w: Box<dyn std::io::Write> = match wc {
+        let w: Box<dyn std::io::Write> = match wc {
             config::WriterConfig::Syslog { facility } => {
-                let fac = match facility.as_str() {
-                    "auth" => libc::LOG_AUTH,
-                    "authpriv" => libc::LOG_AUTHPRIV,
-                    "local0" => libc::LOG_LOCAL0,
-                    "local1" => libc::LOG_LOCAL1,
-                    "local2" => libc::LOG_LOCAL2,
-                    "local3" => libc::LOG_LOCAL3,
-                    "local4" => libc::LOG_LOCAL4,
-                    "local5" => libc::LOG_LOCAL5,
-                    "local6" => libc::LOG_LOCAL6,
-                    "local7" => libc::LOG_LOCAL7,
-                    _ => libc::LOG_AUTHPRIV,
-                };
+                let fac = parse_syslog_facility(facility);
                 Box::new(backend::SyslogWriter::new("epitropos", fac))
             }
             config::WriterConfig::Journal { identifier } => {
@@ -134,8 +123,10 @@ fn run() -> Result<(), String> {
                 }
             },
         };
-        let _ = recorder.write_header(&mut *w, cols, rows, &real_shell, &term, &meta);
+        extra_writers.push(w);
     }
+    let mut extra = backend::MultiWriter::new(extra_writers);
+    let _ = recorder.write_header(&mut extra, cols, rows, &real_shell, &term, &meta);
 
     let slave_fd = pty.open_slave()?;
     let signal_state = signals::SignalState::setup()?;
@@ -173,6 +164,7 @@ fn run() -> Result<(), String> {
         &recorder,
         &mut rate_limiter,
         &mut write_buf,
+        &mut extra,
     );
 
     if let Some(ref termios) = saved_termios {
@@ -276,6 +268,22 @@ fn decode_shell_from_argv0() -> Option<String> {
         }
     }
     Some(decoded)
+}
+
+fn parse_syslog_facility(s: &str) -> libc::c_int {
+    match s {
+        "auth" => libc::LOG_AUTH,
+        "authpriv" => libc::LOG_AUTHPRIV,
+        "local0" => libc::LOG_LOCAL0,
+        "local1" => libc::LOG_LOCAL1,
+        "local2" => libc::LOG_LOCAL2,
+        "local3" => libc::LOG_LOCAL3,
+        "local4" => libc::LOG_LOCAL4,
+        "local5" => libc::LOG_LOCAL5,
+        "local6" => libc::LOG_LOCAL6,
+        "local7" => libc::LOG_LOCAL7,
+        _ => libc::LOG_AUTHPRIV,
+    }
 }
 
 fn detect_command() -> Option<String> {

@@ -10,18 +10,6 @@ mod session_id;
 mod signals;
 mod utmp;
 
-// epitropos — PTY-proxy for tamper-proof session recording.
-//
-// Installed as the user's login shell (replacing /bin/bash etc.).
-// When any login process (sshd, login, su, sudo) spawns the "shell",
-// it runs epitropos instead. Epitropos allocates a nested PTY, spawns
-// the user's real shell (from config) on the slave side, and bridges
-// all I/O while generating an asciicinema v2 stream piped to katagrapho.
-//
-// Runs setuid root during setup to fork the shell as the target user,
-// then drops to an unprivileged session-proxy UID. The recorded user
-// cannot kill, signal, or ptrace this process.
-
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 
@@ -35,30 +23,18 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    // 1. Sanitize fds 0/1/2 — prevent fd hijacking if any are closed.
     process::sanitize_std_fds();
-
-    // 2. Sanitize environment
     env::sanitize();
 
-    // 3. Load configuration
     let cfg = config::load()?;
-
-    // 4. Resolve calling user
     let user = process::resolve_caller()?;
 
-    // 5. Duplicate session prevention via Linux audit session ID.
-    //    If another epitropos instance already holds the lock for this
-    //    audit session, skip recording and exec the real shell directly.
-    //    This prevents double-recording for su/sudo/subshells.
+    // Duplicate session prevention via audit session ID lock files.
     let audit_session_id = process::get_audit_session_id();
     if let Some(asid) = audit_session_id {
         match process::try_session_lock(asid) {
-            Ok(true) => {
-                // We acquired the lock — proceed with recording.
-            }
+            Ok(true) => {}
             Ok(false) => {
-                // Lock held by another instance — skip recording.
                 let real_shell = cfg.shell.resolve(&user.username);
                 log::nesting_skip(&asid.to_string(), &user.username, "audit-session-locked");
                 process::become_user(&user)?;
@@ -66,24 +42,19 @@ fn run() -> Result<(), String> {
                 unreachable!();
             }
             Err(e) => {
-                // Lock dir missing or other error — proceed anyway (fail-open for locking).
                 eprintln!("epitropos: session lock warning: {e}");
             }
         }
     }
 
-    // 6. Determine fail policy
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
-
-    // 7. Generate session ID
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
-    // 7. Resolve real shell: argv0 symlink encoding overrides config.
+    // argv0 symlink encoding overrides config shell.
     let real_shell =
         decode_shell_from_argv0().unwrap_or_else(|| cfg.shell.resolve(&user.username).to_string());
 
-    // 8. Spawn katagrapho
     let recipient = if cfg.encryption.enabled {
         Some(cfg.encryption.recipient_file.as_str())
     } else {
@@ -97,7 +68,6 @@ fn run() -> Result<(), String> {
             }
         };
 
-    // 8. Open PTY
     let pty = match pty::Pty::open() {
         Ok(p) => p,
         Err(reason) => {
@@ -109,19 +79,13 @@ fn run() -> Result<(), String> {
         }
     };
 
-    // 9. Get terminal size from stdin, set on pty master (default 80x24)
     let (cols, rows) = pty::get_terminal_size(0).unwrap_or((80, 24));
     let _ = pty::set_terminal_size(pty.master, cols, rows);
 
-    // 10. Print notice banner
-    if !cfg.notice.text.is_empty() {
-        let is_tty = unsafe { libc::isatty(1) } == 1;
-        if is_tty {
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), cfg.notice.text.as_bytes());
-        }
+    if !cfg.notice.text.is_empty() && unsafe { libc::isatty(1) } == 1 {
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), cfg.notice.text.as_bytes());
     }
 
-    // 11. Build recording metadata
     let meta = asciicinema::Metadata {
         hostname: asciicinema::get_hostname(),
         boot_id: asciicinema::get_boot_id(),
@@ -129,7 +93,6 @@ fn run() -> Result<(), String> {
         recording_id: session_id.clone(),
     };
 
-    // 12. Create recorder and write header to pipe
     let recorder = asciicinema::Recorder::new();
     {
         let mut file = unsafe { std::fs::File::from_raw_fd(pipe_write) };
@@ -138,15 +101,9 @@ fn run() -> Result<(), String> {
         std::mem::forget(file);
     }
 
-    // 11. Open slave side of PTY
     let slave_fd = pty.open_slave()?;
-
-    // 12. Set up signal handlers
     let signal_state = signals::SignalState::setup()?;
 
-    // 14. Fork shell
-    // Detect command to run: sshd invokes the login shell as "shell -c command",
-    // so check argv for -c. Also check SSH_ORIGINAL_COMMAND as fallback.
     let command = detect_command();
     let shell_env = env::build_shell_env(&session_id);
     let shell_pid =
@@ -159,11 +116,9 @@ fn run() -> Result<(), String> {
     let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
     process::drop_privileges(proxy_uid, proxy_gid)?;
 
-    // 16. Set terminal to raw mode (only if stdin is a terminal)
     let is_tty = unsafe { libc::isatty(0) } == 1;
     let saved_termios = if is_tty { Some(set_raw_mode(0)?) } else { None };
 
-    // 17. Run event loop
     let loop_cfg = event_loop::LoopConfig {
         user_stdin: 0,
         user_stdout: 1,
@@ -177,23 +132,16 @@ fn run() -> Result<(), String> {
         rate_limit::RateLimiter::new(cfg.limit.rate, cfg.limit.burst, cfg.limit.action.clone());
     let result = event_loop::run(&loop_cfg, &signal_state, &recorder, &mut rate_limiter);
 
-    // 18. Restore terminal (only if we set raw mode)
     if let Some(ref termios) = saved_termios {
         restore_terminal(0, termios);
     }
 
-    // 19. Close pipe_write to signal EOF to katagrapho
-    unsafe {
-        libc::close(pipe_write);
-    }
-
-    // 20. Wait for katagrapho to exit
+    unsafe { libc::close(pipe_write) };
     unsafe {
         let mut status: libc::c_int = 0;
         libc::waitpid(kata_pid, &mut status, 0);
     }
 
-    // 21. If recording failed, log and run failure hook
     if result.recording_failed {
         let reason = result.failure_reason.as_deref().unwrap_or("unknown error");
         eprintln!("epitropos: recording failed: {reason}");
@@ -201,39 +149,29 @@ fn run() -> Result<(), String> {
         run_failure_hook(&cfg, &session_id, &user.username, &result.failure_reason);
     }
 
-    // 22. Release session lock
     utmp::remove_entry(&pty.slave_path, shell_pid);
     if let Some(asid) = audit_session_id {
         process::release_session_lock(asid);
     }
 
-    // 23. Exit with shell's exit code
     log::session_end(&session_id, &user.username, 0.0, result.shell_exit_code);
     std::process::exit(result.shell_exit_code);
 }
 
-/// Resolve the effective fail mode for the given user based on group membership.
-/// closed_for_groups has higher priority than open_for_groups.
 fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
-    // Check closed_for_groups first (higher priority)
     for group in &policy.closed_for_groups {
         if process::user_in_group(username, group) {
             return FailMode::Closed;
         }
     }
-
-    // Then check open_for_groups
     for group in &policy.open_for_groups {
         if process::user_in_group(username, group) {
             return FailMode::Open;
         }
     }
-
-    // Fall back to default
     policy.default.clone()
 }
 
-/// Handle a startup failure according to the fail mode policy.
 fn handle_startup_failure(
     fail_mode: FailMode,
     user: &process::UserInfo,
@@ -253,21 +191,16 @@ fn handle_startup_failure(
     }
 }
 
-/// Exec a shell as a login shell (argv0 = "-bash" style).
 fn exec_shell_path(shell_path: &str) -> Result<(), String> {
     let c_shell =
         CString::new(shell_path.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
-
     let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
     let login_name = format!("-{base}");
     let c_login_name =
         CString::new(login_name.as_bytes()).map_err(|e| format!("invalid login name: {e}"))?;
 
     let argv: &[*const libc::c_char] = &[c_login_name.as_ptr(), std::ptr::null()];
-    unsafe {
-        libc::execv(c_shell.as_ptr(), argv.as_ptr());
-    }
-
+    unsafe { libc::execv(c_shell.as_ptr(), argv.as_ptr()) };
     Err(format!(
         "execv({}) failed: {}",
         shell_path,
@@ -275,15 +208,12 @@ fn exec_shell_path(shell_path: &str) -> Result<(), String> {
     ))
 }
 
-/// Decode shell path from argv[0] if it contains "-shell-".
-/// e.g. "epitropos-shell-bin-zsh" -> "/bin/zsh"
-/// Encoding: / becomes -, literal - is \-, literal \ is \\.
+/// Decode shell from argv0: "epitropos-shell-bin-zsh" → "/bin/zsh"
 fn decode_shell_from_argv0() -> Option<String> {
     let argv0 = std::env::args().next()?;
     let basename = argv0.rsplit('/').next().unwrap_or(&argv0);
-    let marker = "-shell-";
-    let idx = basename.find(marker)?;
-    let encoded = &basename[idx + marker.len()..];
+    let idx = basename.find("-shell-")?;
+    let encoded = &basename[idx + 7..];
     if encoded.is_empty() {
         return None;
     }
@@ -305,20 +235,14 @@ fn decode_shell_from_argv0() -> Option<String> {
     Some(decoded)
 }
 
-/// Detect if we were invoked with a command to run.
-/// sshd invokes the login shell as: shell -c "command"
-/// Also check SSH_ORIGINAL_COMMAND as fallback.
 fn detect_command() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    // Check for "-c" "command" in argv (standard shell invocation)
     if args.len() >= 3 && args[1] == "-c" {
         return Some(args[2..].join(" "));
     }
-    // Fallback: SSH_ORIGINAL_COMMAND
     std::env::var("SSH_ORIGINAL_COMMAND").ok()
 }
 
-/// Set terminal to raw mode, returning the original termios for later restoration.
 fn set_raw_mode(fd: RawFd) -> Result<libc::termios, String> {
     let mut orig: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(fd, &mut orig) } < 0 {
@@ -327,30 +251,21 @@ fn set_raw_mode(fd: RawFd) -> Result<libc::termios, String> {
             std::io::Error::last_os_error()
         ));
     }
-
     let mut raw = orig;
-    unsafe {
-        libc::cfmakeraw(&mut raw);
-    }
-
+    unsafe { libc::cfmakeraw(&mut raw) };
     if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } < 0 {
         return Err(format!(
             "tcsetattr failed: {}",
             std::io::Error::last_os_error()
         ));
     }
-
     Ok(orig)
 }
 
-/// Restore terminal to the saved termios state.
 fn restore_terminal(fd: RawFd, termios: &libc::termios) {
-    unsafe {
-        libc::tcsetattr(fd, libc::TCSANOW, termios);
-    }
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, termios) };
 }
 
-/// Run the on_recording_failure hook if configured.
 fn run_failure_hook(
     cfg: &config::Config,
     session_id: &str,
@@ -366,13 +281,13 @@ fn run_failure_hook(
         Ok(s) => s,
         Err(_) => return,
     };
-    let c_session_id_flag = CString::new("--session-id").unwrap();
-    let c_session_id = match CString::new(session_id) {
+    let c_sid_flag = CString::new("--session-id").unwrap();
+    let c_sid = match CString::new(session_id) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let c_username_flag = CString::new("--username").unwrap();
-    let c_username = match CString::new(username) {
+    let c_user_flag = CString::new("--username").unwrap();
+    let c_user = match CString::new(username) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -385,17 +300,14 @@ fn run_failure_hook(
 
     let pid = unsafe { libc::fork() };
     match pid {
-        -1 => {
-            eprintln!("epitropos: fork for failure hook failed");
-        }
+        -1 => {}
         0 => {
-            // Child: exec the hook
             let argv: &[*const libc::c_char] = &[
                 c_hook.as_ptr(),
-                c_session_id_flag.as_ptr(),
-                c_session_id.as_ptr(),
-                c_username_flag.as_ptr(),
-                c_username.as_ptr(),
+                c_sid_flag.as_ptr(),
+                c_sid.as_ptr(),
+                c_user_flag.as_ptr(),
+                c_user.as_ptr(),
                 c_reason_flag.as_ptr(),
                 c_reason.as_ptr(),
                 std::ptr::null(),
@@ -406,27 +318,21 @@ fn run_failure_hook(
             }
         }
         child_pid => {
-            // Parent: wait up to 5 seconds
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(5);
             loop {
                 let mut status: libc::c_int = 0;
                 let ret = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
-                if ret > 0 {
-                    break;
-                }
-                if ret < 0 {
+                if ret != 0 {
                     break;
                 }
                 if start.elapsed() >= timeout {
-                    eprintln!("epitropos: failure hook timed out, killing");
                     unsafe {
                         libc::kill(child_pid, libc::SIGKILL);
                         libc::waitpid(child_pid, &mut status, 0);
                     }
                     break;
                 }
-                // Brief sleep to avoid busy-waiting
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }

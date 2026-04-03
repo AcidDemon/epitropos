@@ -101,6 +101,7 @@ pub struct General {
     pub session_proxy_group: String,
     #[serde(default)]
     pub record_input: bool,
+    pub latency: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

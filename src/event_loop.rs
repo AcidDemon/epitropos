@@ -1,7 +1,7 @@
-use std::io::Write;
 use std::os::unix::io::RawFd;
 
 use crate::asciicinema::Recorder;
+use crate::buffer::FlushBuffer;
 use crate::rate_limit::RateLimiter;
 use crate::signals::SignalState;
 
@@ -9,7 +9,6 @@ pub struct LoopConfig {
     pub user_stdin: RawFd,
     pub user_stdout: RawFd,
     pub pty_master: RawFd,
-    pub pipe_write: RawFd,
     pub signal_pipe: RawFd,
     pub shell_pid: libc::pid_t,
     pub record_input: bool,
@@ -19,29 +18,6 @@ pub struct LoopResult {
     pub shell_exit_code: i32,
     pub recording_failed: bool,
     pub failure_reason: Option<String>,
-}
-
-/// Write wrapper that sends all bytes to a raw fd via `std::io::Write`.
-struct PipeWriter {
-    fd: RawFd,
-}
-
-impl Write for PipeWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let n = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
-        if n < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(n as usize)
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Write all `data` bytes to `fd`, retrying on partial writes.
@@ -65,10 +41,11 @@ fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), ()> {
 
 /// Drain all available output from `pty_master` and forward it to `user_stdout`
 /// and the recorder, used before breaking on POLLHUP.
+#[allow(clippy::collapsible_if)]
 fn drain_pty(
     pty_master: RawFd,
     user_stdout: RawFd,
-    pipe_write: RawFd,
+    writer: &mut FlushBuffer,
     recorder: &Recorder,
     recording_failed: &mut bool,
     failure_reason: &mut Option<String>,
@@ -82,8 +59,7 @@ fn drain_pty(
         let data = &buf[..n as usize];
         let _ = write_all_fd(user_stdout, data);
         if !*recording_failed {
-            let mut pw = PipeWriter { fd: pipe_write };
-            if let Err(e) = recorder.write_output(&mut pw, data) {
+            if let Err(e) = recorder.write_output(writer, data) {
                 *recording_failed = true;
                 *failure_reason = Some(e);
             }
@@ -108,11 +84,13 @@ fn reap_shell(shell_pid: libc::pid_t) -> i32 {
     }
 }
 
+#[allow(clippy::collapsible_if)]
 pub fn run(
     cfg: &LoopConfig,
     signals: &SignalState,
     recorder: &Recorder,
     rate_limiter: &mut RateLimiter,
+    writer: &mut FlushBuffer,
 ) -> LoopResult {
     let mut shell_exit_code: i32 = 0;
     let mut recording_failed = false;
@@ -164,8 +142,7 @@ pub fn run(
                 if let Ok((cols, rows)) = crate::pty::get_terminal_size(cfg.user_stdin) {
                     let _ = crate::pty::set_terminal_size(cfg.pty_master, cols, rows);
                     if !recording_failed {
-                        let mut pw = PipeWriter { fd: cfg.pipe_write };
-                        if let Err(e) = recorder.write_resize(&mut pw, cols, rows) {
+                        if let Err(e) = recorder.write_resize(writer, cols, rows) {
                             recording_failed = true;
                             failure_reason = Some(e);
                             break 'event_loop;
@@ -198,7 +175,7 @@ pub fn run(
             drain_pty(
                 cfg.pty_master,
                 cfg.user_stdout,
-                cfg.pipe_write,
+                writer,
                 recorder,
                 &mut recording_failed,
                 &mut failure_reason,
@@ -226,8 +203,7 @@ pub fn run(
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.user_stdout, data);
             if !recording_failed && rate_limiter.check(data.len()) {
-                let mut pw = PipeWriter { fd: cfg.pipe_write };
-                if let Err(e) = recorder.write_output(&mut pw, data) {
+                if let Err(e) = recorder.write_output(writer, data) {
                     recording_failed = true;
                     failure_reason = Some(e);
                     break 'event_loop;
@@ -259,17 +235,20 @@ pub fn run(
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.pty_master, data);
             if cfg.record_input && !recording_failed && rate_limiter.check(data.len()) {
-                let mut pw = PipeWriter { fd: cfg.pipe_write };
-                if let Err(e) = recorder.write_input(&mut pw, data) {
+                if let Err(e) = recorder.write_input(writer, data) {
                     recording_failed = true;
                     failure_reason = Some(e);
                     break 'event_loop;
                 }
             }
         }
+
+        if writer.should_flush() {
+            let _ = writer.flush();
+        }
     }
 
-    // If we haven't successfully reaped the shell yet, do a blocking wait.
+    // Blocking wait for shell if not yet reaped.
     if !shell_exited {
         let mut status: libc::c_int = 0;
         let ret = unsafe { libc::waitpid(cfg.shell_pid, &mut status, 0) };
@@ -283,6 +262,8 @@ pub fn run(
             };
         }
     }
+
+    let _ = writer.flush();
 
     LoopResult {
         shell_exit_code,

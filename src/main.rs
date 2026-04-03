@@ -1,4 +1,5 @@
 mod asciicinema;
+mod buffer;
 mod config;
 mod env;
 mod event_loop;
@@ -123,14 +124,21 @@ fn run() -> Result<(), String> {
         user_stdin: 0,
         user_stdout: 1,
         pty_master: pty.master,
-        pipe_write,
         signal_pipe: signal_state.pipe_read,
         shell_pid,
         record_input: cfg.general.record_input,
     };
     let mut rate_limiter =
         rate_limit::RateLimiter::new(cfg.limit.rate, cfg.limit.burst, cfg.limit.action.clone());
-    let result = event_loop::run(&loop_cfg, &signal_state, &recorder, &mut rate_limiter);
+    let latency = cfg.general.latency.unwrap_or(10);
+    let mut write_buf = buffer::FlushBuffer::new(pipe_write, latency);
+    let result = event_loop::run(
+        &loop_cfg,
+        &signal_state,
+        &recorder,
+        &mut rate_limiter,
+        &mut write_buf,
+    );
 
     if let Some(ref termios) = saved_termios {
         restore_terminal(0, termios);

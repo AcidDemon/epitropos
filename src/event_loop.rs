@@ -2,6 +2,7 @@ use std::io::Write;
 use std::os::unix::io::RawFd;
 
 use crate::asciicinema::Recorder;
+use crate::rate_limit::RateLimiter;
 use crate::signals::SignalState;
 
 pub struct LoopConfig {
@@ -107,7 +108,12 @@ fn reap_shell(shell_pid: libc::pid_t) -> i32 {
     }
 }
 
-pub fn run(cfg: &LoopConfig, signals: &SignalState, recorder: &Recorder) -> LoopResult {
+pub fn run(
+    cfg: &LoopConfig,
+    signals: &SignalState,
+    recorder: &Recorder,
+    rate_limiter: &mut RateLimiter,
+) -> LoopResult {
     let mut shell_exit_code: i32 = 0;
     let mut recording_failed = false;
     let mut failure_reason: Option<String> = None;
@@ -219,7 +225,7 @@ pub fn run(cfg: &LoopConfig, signals: &SignalState, recorder: &Recorder) -> Loop
             }
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.user_stdout, data);
-            if !recording_failed {
+            if !recording_failed && rate_limiter.check(data.len()) {
                 let mut pw = PipeWriter { fd: cfg.pipe_write };
                 if let Err(e) = recorder.write_output(&mut pw, data) {
                     recording_failed = true;
@@ -252,7 +258,7 @@ pub fn run(cfg: &LoopConfig, signals: &SignalState, recorder: &Recorder) -> Loop
             }
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.pty_master, data);
-            if cfg.record_input && !recording_failed {
+            if cfg.record_input && !recording_failed && rate_limiter.check(data.len()) {
                 let mut pw = PipeWriter { fd: cfg.pipe_write };
                 if let Err(e) = recorder.write_input(&mut pw, data) {
                     recording_failed = true;

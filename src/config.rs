@@ -7,9 +7,49 @@ pub struct Config {
     pub encryption: Encryption,
     pub fail_policy: FailPolicy,
     #[serde(default)]
+    pub limit: RateLimit,
+    #[serde(default)]
     pub notice: Notice,
     #[serde(default)]
     pub hooks: Hooks,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RateLimit {
+    #[serde(default = "RateLimit::default_rate")]
+    pub rate: u64,
+    #[serde(default = "RateLimit::default_burst")]
+    pub burst: u64,
+    #[serde(default)]
+    pub action: RateLimitAction,
+}
+
+impl RateLimit {
+    fn default_rate() -> u64 {
+        16384
+    }
+    fn default_burst() -> u64 {
+        32768
+    }
+}
+
+impl Default for RateLimit {
+    fn default() -> Self {
+        RateLimit {
+            rate: Self::default_rate(),
+            burst: Self::default_burst(),
+            action: RateLimitAction::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RateLimitAction {
+    #[default]
+    Pass,
+    Delay,
+    Drop,
 }
 
 #[derive(Debug, Deserialize)]

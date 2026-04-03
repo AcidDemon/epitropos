@@ -5,6 +5,7 @@ mod event_loop;
 mod log;
 mod process;
 mod pty;
+mod rate_limit;
 mod session_id;
 mod signals;
 
@@ -174,7 +175,9 @@ fn run() -> Result<(), String> {
         shell_pid,
         record_input: cfg.general.record_input,
     };
-    let result = event_loop::run(&loop_cfg, &signal_state, &recorder);
+    let mut rate_limiter =
+        rate_limit::RateLimiter::new(cfg.limit.rate, cfg.limit.burst, cfg.limit.action.clone());
+    let result = event_loop::run(&loop_cfg, &signal_state, &recorder, &mut rate_limiter);
 
     // 18. Restore terminal (only if we set raw mode)
     if let Some(ref termios) = saved_termios {

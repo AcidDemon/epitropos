@@ -8,6 +8,8 @@ mod log;
 mod process;
 mod pty;
 mod rate_limit;
+#[cfg(target_arch = "x86_64")]
+mod seccomp;
 mod session_id;
 mod signals;
 mod utmp;
@@ -142,6 +144,9 @@ fn run() -> Result<(), String> {
     let proxy_uid = process::resolve_uid(&cfg.general.session_proxy_user)?;
     let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
     process::drop_privileges(proxy_uid, proxy_gid)?;
+
+    #[cfg(target_arch = "x86_64")]
+    seccomp::install_filter();
 
     let is_tty = unsafe { libc::isatty(0) } == 1;
     let saved_termios = if is_tty { Some(set_raw_mode(0)?) } else { None };

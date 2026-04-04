@@ -19,7 +19,7 @@ pub extern "C" fn signal_handler(sig: libc::c_int) {
         libc::SIGCHLD => {
             SIGCHLD_RECEIVED.store(true, Ordering::Relaxed);
         }
-        libc::SIGTERM | libc::SIGHUP => {
+        libc::SIGTERM | libc::SIGHUP | libc::SIGINT => {
             SIGTERM_RECEIVED.store(true, Ordering::Relaxed);
         }
         _ => {}
@@ -54,7 +54,13 @@ impl SignalState {
         SIGNAL_PIPE_WRITE.store(pipe_write, Ordering::Relaxed);
 
         // Install the handler for each signal we care about.
-        for &sig in &[libc::SIGWINCH, libc::SIGCHLD, libc::SIGTERM, libc::SIGHUP] {
+        for &sig in &[
+            libc::SIGWINCH,
+            libc::SIGCHLD,
+            libc::SIGTERM,
+            libc::SIGHUP,
+            libc::SIGINT,
+        ] {
             let sa = libc::sigaction {
                 sa_sigaction: signal_handler as *const () as libc::sighandler_t,
                 sa_mask: unsafe {

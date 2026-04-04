@@ -1,207 +1,209 @@
-/// Install a seccomp-bpf filter restricting syscalls to the event loop's needs.
-/// Must be called after privilege drop and before the event loop.
-///
-/// Uses prctl(PR_SET_SECCOMP) with SECCOMP_MODE_FILTER.
-/// If seccomp isn't available, fails silently.
 pub fn install_filter() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::mem;
-
-        // x86_64 syscall numbers
-        const SYS_READ: u32 = 0;
-        const SYS_WRITE: u32 = 1;
-        const SYS_CLOSE: u32 = 3;
-        const SYS_POLL: u32 = 7;
-        const SYS_IOCTL: u32 = 16;
-        const SYS_NANOSLEEP: u32 = 35;
-        const SYS_CLOCK_NANOSLEEP: u32 = 230;
-        const SYS_KILL: u32 = 62;
-        const SYS_WAIT4: u32 = 61;
-        const SYS_CLOCK_GETTIME: u32 = 228;
-        const SYS_RT_SIGRETURN: u32 = 15;
-        const SYS_EXIT_GROUP: u32 = 231;
-        const SYS_EXIT: u32 = 60;
-        const SYS_SIGALTSTACK: u32 = 131;
-        const SYS_MMAP: u32 = 9;
-        const SYS_MUNMAP: u32 = 11;
-        const SYS_MPROTECT: u32 = 10;
-        const SYS_BRK: u32 = 12;
-        const SYS_FUTEX: u32 = 202;
-        const SYS_GETRANDOM: u32 = 318;
-        const SYS_PPOLL: u32 = 271;
-        const SYS_PSELECT6: u32 = 270;
-        const SYS_FCNTL: u32 = 72;
-        const SYS_GETPID: u32 = 39;
-
-        // BPF instructions
-        const BPF_LD: u16 = 0x00;
-        const BPF_W: u16 = 0x00;
-        const BPF_ABS: u16 = 0x20;
-        const BPF_JMP: u16 = 0x05;
-        const BPF_JEQ: u16 = 0x10;
-        const BPF_K: u16 = 0x00;
-        const BPF_RET: u16 = 0x06;
-
-        const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
-        // LOG mode: disallowed syscalls are logged to audit but not killed.
-        // Switch to 0x80000000 (KILL) after profiling the exact syscall set.
-        const SECCOMP_RET_DEFAULT: u32 = 0x7ffc0000; // SECCOMP_RET_LOG
-
-        #[repr(C)]
-        struct SockFilter {
-            code: u16,
-            jt: u8,
-            jf: u8,
-            k: u32,
-        }
-
-        #[repr(C)]
-        struct SockFprog {
-            len: u16,
-            filter: *const SockFilter,
-        }
-
-        // offset of seccomp_data.nr (syscall number)
-        const NR_OFFSET: u32 = 0;
-
-        const SYS_FSTAT: u32 = 5;
-        const SYS_LSEEK: u32 = 8;
-        const SYS_ACCESS: u32 = 21;
-        const SYS_DUP: u32 = 32;
-        const SYS_DUP2: u32 = 33;
-        const SYS_RT_SIGACTION: u32 = 13;
-        const SYS_RT_SIGPROCMASK: u32 = 14;
-        const SYS_OPENAT: u32 = 257;
-        const SYS_NEWFSTATAT: u32 = 262;
-        const SYS_SCHED_YIELD: u32 = 24;
-        const SYS_GETDENTS64: u32 = 217;
-        const SYS_PRLIMIT64: u32 = 302;
-        const SYS_RSEQ: u32 = 334;
-        const SYS_SET_ROBUST_LIST: u32 = 273;
-        const SYS_UNLINK: u32 = 87;
-        const SYS_UNLINKAT: u32 = 263;
-        const SYS_WRITEV: u32 = 20;
-        const SYS_READV: u32 = 19;
-        const SYS_PWRITE64: u32 = 18;
-        const SYS_PREAD64: u32 = 17;
-        const SYS_SENDTO: u32 = 44;
-        const SYS_CONNECT: u32 = 42;
-        const SYS_SOCKET: u32 = 41;
-        const SYS_GETTID: u32 = 186;
-        const SYS_TGKILL: u32 = 234;
-        const SYS_CLONE3: u32 = 435;
-        const SYS_CLONE: u32 = 56;
-
-        let allowed: &[u32] = &[
-            SYS_READ,
-            SYS_WRITE,
-            SYS_CLOSE,
-            SYS_FSTAT,
-            SYS_LSEEK,
-            SYS_POLL,
-            SYS_PPOLL,
-            SYS_PSELECT6,
-            SYS_IOCTL,
-            SYS_ACCESS,
-            SYS_DUP,
-            SYS_DUP2,
-            SYS_NANOSLEEP,
-            SYS_CLOCK_NANOSLEEP,
-            SYS_KILL,
-            SYS_WAIT4,
-            SYS_CLOCK_GETTIME,
-            SYS_RT_SIGRETURN,
-            SYS_RT_SIGACTION,
-            SYS_RT_SIGPROCMASK,
-            SYS_SIGALTSTACK,
-            SYS_EXIT_GROUP,
-            SYS_EXIT,
-            SYS_MMAP,
-            SYS_MUNMAP,
-            SYS_MPROTECT,
-            SYS_BRK,
-            SYS_FUTEX,
-            SYS_GETRANDOM,
-            SYS_FCNTL,
-            SYS_GETPID,
-            SYS_OPENAT,
-            SYS_NEWFSTATAT,
-            SYS_SCHED_YIELD,
-            SYS_GETDENTS64,
-            SYS_PRLIMIT64,
-            SYS_RSEQ,
-            SYS_SET_ROBUST_LIST,
-            SYS_UNLINK,
-            SYS_UNLINKAT,
-            SYS_WRITEV,
-            SYS_READV,
-            SYS_PWRITE64,
-            SYS_PREAD64,
-            SYS_SENDTO,
-            SYS_CONNECT,
-            SYS_SOCKET,
-            SYS_GETTID,
-            SYS_TGKILL,
-            SYS_CLONE3,
-            SYS_CLONE,
-        ];
-
-        // Build BPF program: load syscall nr, check each allowed, kill otherwise
-        let mut insns: Vec<SockFilter> = Vec::new();
-
-        // Load syscall number
-        insns.push(SockFilter {
-            code: BPF_LD | BPF_W | BPF_ABS,
-            jt: 0,
-            jf: 0,
-            k: NR_OFFSET,
-        });
-
-        let n = allowed.len();
-        for (i, &nr) in allowed.iter().enumerate() {
-            let remaining = n - i - 1;
-            insns.push(SockFilter {
-                code: BPF_JMP | BPF_JEQ | BPF_K,
-                jt: (remaining + 1) as u8, // jump to ALLOW
-                jf: 0,                     // continue checking
-                k: nr,
-            });
-        }
-
-        // Default: kill
-        insns.push(SockFilter {
-            code: BPF_RET | BPF_K,
-            jt: 0,
-            jf: 0,
-            k: SECCOMP_RET_DEFAULT,
-        });
-
-        // Allow
-        insns.push(SockFilter {
-            code: BPF_RET | BPF_K,
-            jt: 0,
-            jf: 0,
-            k: SECCOMP_RET_ALLOW,
-        });
-
-        let prog = SockFprog {
-            len: insns.len() as u16,
-            filter: insns.as_ptr(),
-        };
-
-        unsafe {
-            // Allow setting seccomp filters without CAP_SYS_ADMIN
-            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-            libc::prctl(
-                libc::PR_SET_SECCOMP,
-                2, // SECCOMP_MODE_FILTER
-                &prog as *const SockFprog as libc::c_ulong,
-                0,
-                0,
-            );
-        }
-
-        mem::forget(insns); // BPF filter must outlive the prctl
+    let syscalls = allowed_syscalls();
+    if syscalls.is_empty() {
+        return;
     }
+    install_bpf(&syscalls);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn allowed_syscalls() -> Vec<u32> {
+    vec![
+        0,   // read
+        1,   // write
+        3,   // close
+        5,   // fstat
+        7,   // poll
+        8,   // lseek
+        9,   // mmap
+        10,  // mprotect (arg checked below isn't possible in basic BPF, so allowed)
+        11,  // munmap
+        12,  // brk
+        13,  // rt_sigaction
+        14,  // rt_sigprocmask
+        15,  // rt_sigreturn
+        16,  // ioctl
+        17,  // pread64
+        18,  // pwrite64
+        19,  // readv
+        20,  // writev
+        21,  // access
+        24,  // sched_yield
+        32,  // dup
+        33,  // dup2
+        35,  // nanosleep
+        39,  // getpid
+        41,  // socket
+        42,  // connect
+        44,  // sendto
+        56,  // clone
+        60,  // exit
+        61,  // wait4
+        62,  // kill
+        72,  // fcntl
+        87,  // unlink
+        131, // sigaltstack
+        186, // gettid
+        202, // futex
+        217, // getdents64
+        228, // clock_gettime
+        230, // clock_nanosleep
+        231, // exit_group
+        234, // tgkill
+        257, // openat
+        262, // newfstatat
+        263, // unlinkat
+        270, // pselect6
+        271, // ppoll
+        273, // set_robust_list
+        302, // prlimit64
+        318, // getrandom
+        334, // rseq
+        435, // clone3
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+fn allowed_syscalls() -> Vec<u32> {
+    vec![
+        63,  // read
+        64,  // write
+        57,  // close
+        80,  // fstat
+        73,  // ppoll
+        62,  // lseek
+        222, // mmap
+        226, // mprotect
+        215, // munmap
+        214, // brk
+        134, // rt_sigaction
+        135, // rt_sigprocmask
+        139, // rt_sigreturn
+        29,  // ioctl
+        67,  // pread64
+        68,  // pwrite64
+        65,  // readv
+        66,  // writev
+        21,  // access (via faccessat on aarch64: 48)
+        48,  // faccessat
+        124, // sched_yield
+        23,  // dup
+        24,  // dup3
+        101, // nanosleep
+        172, // getpid
+        198, // socket
+        203, // connect
+        206, // sendto
+        220, // clone
+        93,  // exit
+        95,  // wait4 (waitid: 95)
+        260, // wait4
+        129, // kill
+        25,  // fcntl
+        35,  // unlinkat
+        132, // sigaltstack
+        178, // gettid
+        98,  // futex
+        61,  // getdents64
+        113, // clock_gettime
+        115, // clock_nanosleep
+        94,  // exit_group
+        131, // tgkill
+        56,  // openat
+        79,  // newfstatat
+        72,  // pselect6
+        273, // set_robust_list
+        261, // prlimit64
+        278, // getrandom
+        293, // rseq
+        435, // clone3
+    ]
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn allowed_syscalls() -> Vec<u32> {
+    eprintln!("epitropos: seccomp not supported on this architecture");
+    vec![]
+}
+
+fn install_bpf(allowed: &[u32]) {
+    use std::mem;
+
+    const BPF_LD: u16 = 0x00;
+    const BPF_W: u16 = 0x00;
+    const BPF_ABS: u16 = 0x20;
+    const BPF_JMP: u16 = 0x05;
+    const BPF_JEQ: u16 = 0x10;
+    const BPF_K: u16 = 0x00;
+    const BPF_RET: u16 = 0x06;
+
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
+    // LOG for now — switch to 0x80000000 (KILL) after profiling on target.
+    const SECCOMP_RET_DEFAULT: u32 = 0x7ffc0000;
+
+    #[repr(C)]
+    struct SockFilter {
+        code: u16,
+        jt: u8,
+        jf: u8,
+        k: u32,
+    }
+
+    #[repr(C)]
+    struct SockFprog {
+        len: u16,
+        filter: *const SockFilter,
+    }
+
+    let mut insns: Vec<SockFilter> = Vec::new();
+
+    // Load syscall number (offset 0 in seccomp_data)
+    insns.push(SockFilter {
+        code: BPF_LD | BPF_W | BPF_ABS,
+        jt: 0,
+        jf: 0,
+        k: 0,
+    });
+
+    let n = allowed.len();
+    for (i, &nr) in allowed.iter().enumerate() {
+        let remaining = n - i - 1;
+        insns.push(SockFilter {
+            code: BPF_JMP | BPF_JEQ | BPF_K,
+            jt: (remaining + 1) as u8,
+            jf: 0,
+            k: nr,
+        });
+    }
+
+    insns.push(SockFilter {
+        code: BPF_RET | BPF_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_DEFAULT,
+    });
+    insns.push(SockFilter {
+        code: BPF_RET | BPF_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ALLOW,
+    });
+
+    let prog = SockFprog {
+        len: insns.len() as u16,
+        filter: insns.as_ptr(),
+    };
+
+    unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            2,
+            &prog as *const SockFprog as libc::c_ulong,
+            0,
+            0,
+        );
+    }
+
+    mem::forget(insns);
 }

@@ -8,7 +8,6 @@ mod log;
 mod process;
 mod pty;
 mod rate_limit;
-#[cfg(target_arch = "x86_64")]
 mod seccomp;
 mod session_id;
 mod signals;
@@ -140,7 +139,6 @@ fn run() -> Result<(), String> {
     // Proxy already runs as session-proxy (setuid). Just harden.
     process::harden_proxy();
 
-    #[cfg(target_arch = "x86_64")]
     seccomp::install_filter();
 
     let is_tty = unsafe { libc::isatty(0) } == 1;

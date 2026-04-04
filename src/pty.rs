@@ -1,4 +1,3 @@
-use std::ffi::CStr;
 use std::fs;
 use std::os::unix::io::RawFd;
 
@@ -57,23 +56,23 @@ impl Pty {
             ));
         }
 
-        // Retrieve the path of the slave device.
-        let slave_path = unsafe {
-            let ptr = libc::ptsname(master);
-            if ptr.is_null() {
-                libc::close(master);
+        let slave_path = {
+            let mut buf = [0u8; 256];
+            let ret = unsafe {
+                libc::ptsname_r(master, buf.as_mut_ptr() as *mut libc::c_char, buf.len())
+            };
+            if ret != 0 {
+                unsafe { libc::close(master) };
                 return Err(format!(
-                    "ptsname failed: {}",
+                    "ptsname_r failed: {}",
                     std::io::Error::last_os_error()
                 ));
             }
-            CStr::from_ptr(ptr)
-                .to_str()
-                .map_err(|e| {
-                    libc::close(master);
-                    format!("ptsname returned invalid UTF-8: {e}")
-                })?
-                .to_owned()
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            String::from_utf8(buf[..len].to_vec()).map_err(|e| {
+                unsafe { libc::close(master) };
+                format!("ptsname_r: invalid UTF-8: {e}")
+            })?
         };
 
         Ok(Pty { master, slave_path })

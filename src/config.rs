@@ -124,8 +124,6 @@ impl Shell {
 #[derive(Debug, Deserialize)]
 pub struct General {
     pub katagrapho_path: String,
-    pub session_proxy_user: String,
-    pub session_proxy_group: String,
     #[serde(default)]
     pub record_input: bool,
     pub latency: Option<u64>,
@@ -208,8 +206,6 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         let cfg: Config = toml::from_str(toml).expect("should parse full config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/local/bin/katagrapho");
-        assert_eq!(cfg.general.session_proxy_user, "session-proxy");
-        assert_eq!(cfg.general.session_proxy_group, "session-proxy");
         assert!(cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/bash");
@@ -255,8 +251,6 @@ default = "open"
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/bin/katagrapho");
-        assert_eq!(cfg.general.session_proxy_user, "nobody");
-        assert_eq!(cfg.general.session_proxy_group, "nogroup");
         assert!(!cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/sh");

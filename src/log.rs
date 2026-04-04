@@ -1,37 +1,55 @@
-/// Structured JSON logging for audit events.
-/// Writes to stderr where journald can pick it up.
+use serde_json::json;
+
 pub fn session_start(session_id: &str, username: &str) {
-    let timestamp = timestamp_now();
-    eprintln!(
-        "{{\"event\":\"session_start\",\"session_id\":\"{session_id}\",\"username\":\"{username}\",\"timestamp\":\"{timestamp}\"}}"
-    );
+    emit(&json!({
+        "event": "session_start",
+        "session_id": session_id,
+        "username": username,
+        "timestamp": timestamp_now(),
+    }));
 }
 
 pub fn session_end(session_id: &str, username: &str, elapsed_secs: f64, exit_code: i32) {
-    let timestamp = timestamp_now();
-    eprintln!(
-        "{{\"event\":\"session_end\",\"session_id\":\"{session_id}\",\"username\":\"{username}\",\"elapsed_seconds\":{elapsed_secs:.1},\"exit_code\":{exit_code},\"timestamp\":\"{timestamp}\"}}"
-    );
+    emit(&json!({
+        "event": "session_end",
+        "session_id": session_id,
+        "username": username,
+        "elapsed_seconds": elapsed_secs,
+        "exit_code": exit_code,
+        "timestamp": timestamp_now(),
+    }));
 }
 
 pub fn recording_interrupted(session_id: &str, username: &str, reason: &str, elapsed_secs: f64) {
-    let timestamp = timestamp_now();
-    eprintln!(
-        "{{\"event\":\"recording_interrupted\",\"session_id\":\"{session_id}\",\"username\":\"{username}\",\"reason\":\"{reason}\",\"elapsed_seconds\":{elapsed_secs:.1},\"timestamp\":\"{timestamp}\"}}"
-    );
+    emit(&json!({
+        "event": "recording_interrupted",
+        "session_id": session_id,
+        "username": username,
+        "reason": reason,
+        "elapsed_seconds": elapsed_secs,
+        "timestamp": timestamp_now(),
+    }));
 }
 
-pub fn nesting_skip(session_id: &str, username: &str, pam_service: &str) {
-    let timestamp = timestamp_now();
-    eprintln!(
-        "{{\"event\":\"nesting_skip\",\"session_id\":\"{session_id}\",\"username\":\"{username}\",\"pam_service\":\"{pam_service}\",\"timestamp\":\"{timestamp}\"}}"
-    );
+pub fn nesting_skip(session_id: &str, username: &str, reason: &str) {
+    emit(&json!({
+        "event": "nesting_skip",
+        "session_id": session_id,
+        "username": username,
+        "reason": reason,
+        "timestamp": timestamp_now(),
+    }));
 }
 
-fn timestamp_now() -> String {
+fn emit(v: &serde_json::Value) {
+    if let Ok(s) = serde_json::to_string(v) {
+        eprintln!("{s}");
+    }
+}
+
+fn timestamp_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-        .to_string()
 }

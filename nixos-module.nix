@@ -25,8 +25,6 @@ let
   configFile = pkgs.writeText "epitropos-config.toml" ''
     [general]
     katagrapho_path = "/run/wrappers/bin/katagrapho"
-    session_proxy_user = "${cfg.proxyUser}"
-    session_proxy_group = "${cfg.proxyGroup}"
     record_input = ${if cfg.recordInput then "true" else "false"}
 
     [shell]
@@ -179,8 +177,8 @@ in
 
     security.wrappers.epitropos = {
       source = lib.getExe cfg.package;
-      owner = "root";
-      group = "root";
+      owner = cfg.proxyUser;
+      group = cfg.proxyGroup;
       setuid = true;
       permissions = "u+rx,g+rx,o+rx";
     };
@@ -190,9 +188,8 @@ in
       mode = "0444";
     };
 
-    # Session lock directory (tmpfs).
     systemd.tmpfiles.rules = [
-      "d /var/run/epitropos 0755 root root -"
+      "d /var/run/epitropos 0700 ${cfg.proxyUser} ${cfg.proxyGroup} -"
     ];
 
   };

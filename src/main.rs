@@ -28,36 +28,32 @@ fn main() {
 
 fn run() -> Result<(), String> {
     process::sanitize_std_fds();
+    process::verify_suid_context()?;
     env::sanitize();
 
     let cfg = config::load()?;
     let user = process::resolve_caller()?;
 
-    // Duplicate session prevention via audit session ID lock files.
+    // Nesting: audit session lock + env var fallback.
     let audit_session_id = process::get_audit_session_id();
-    if let Some(asid) = audit_session_id {
-        match process::try_session_lock(asid) {
-            Ok(true) => {}
-            Ok(false) => {
-                let real_shell = cfg.shell.resolve(&user.username);
-                log::nesting_skip(&asid.to_string(), &user.username, "audit-session-locked");
-                process::become_user(&user)?;
-                exec_shell_path(real_shell)?;
-                unreachable!();
-            }
-            Err(e) => {
-                eprintln!("epitropos: session lock warning: {e}");
-            }
-        }
+    if process::is_nested_session(audit_session_id) {
+        let real_shell = cfg.shell.resolve(&user.username);
+        log::nesting_skip(
+            &audit_session_id.map_or("none".into(), |id| id.to_string()),
+            &user.username,
+            "nested",
+        );
+        process::drop_to_real_user()?;
+        exec_shell_path(real_shell)?;
+        unreachable!();
     }
 
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
-    // argv0 symlink encoding overrides config shell.
-    let real_shell =
-        decode_shell_from_argv0().unwrap_or_else(|| cfg.shell.resolve(&user.username).to_string());
+    // Shell resolution: argv0 symlink > config. Validate against allowlist.
+    let real_shell = resolve_shell(&cfg, &user.username);
 
     let recipient = if cfg.encryption.enabled {
         Some(cfg.encryption.recipient_file.as_str())
@@ -68,7 +64,7 @@ fn run() -> Result<(), String> {
         match process::spawn_katagrapho(&cfg.general.katagrapho_path, &session_id, recipient) {
             Ok(v) => v,
             Err(reason) => {
-                return handle_startup_failure(fail_mode, &user, &real_shell, &reason);
+                return handle_startup_failure(fail_mode, &real_shell, &reason);
             }
         };
 
@@ -79,7 +75,7 @@ fn run() -> Result<(), String> {
                 libc::kill(kata_pid, libc::SIGTERM);
                 libc::close(pipe_write);
             }
-            return handle_startup_failure(fail_mode, &user, &real_shell, &reason);
+            return handle_startup_failure(fail_mode, &real_shell, &reason);
         }
     };
 
@@ -99,28 +95,29 @@ fn run() -> Result<(), String> {
 
     let recorder = asciicinema::Recorder::new();
     let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
-    {
-        // Write header to pipe (katagrapho).
-        let mut file = unsafe { std::fs::File::from_raw_fd(pipe_write) };
-        recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta)?;
-        std::mem::forget(file);
+
+    // Write header to pipe. Use dup to avoid ownership issues.
+    let header_fd = unsafe { libc::dup(pipe_write) };
+    if header_fd >= 0 {
+        let mut file = unsafe { std::fs::File::from_raw_fd(header_fd) };
+        let _ = recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta);
+        // file drops here, closing header_fd (which is the dup, not pipe_write)
     }
 
-    // Write header to additional backends.
     let mut extra_writers: Vec<Box<dyn std::io::Write>> = Vec::new();
     for wc in &cfg.writers {
         let w: Box<dyn std::io::Write> = match wc {
-            config::WriterConfig::Syslog { facility } => {
-                let fac = parse_syslog_facility(facility);
-                Box::new(backend::SyslogWriter::new("epitropos", fac))
-            }
+            config::WriterConfig::Syslog { facility } => Box::new(backend::SyslogWriter::new(
+                "epitropos",
+                parse_syslog_facility(facility),
+            )),
             config::WriterConfig::Journal { identifier } => {
                 Box::new(backend::JournaldWriter::new(identifier))
             }
             config::WriterConfig::File { path } => match backend::FileWriter::new(path) {
                 Ok(fw) => Box::new(fw),
                 Err(e) => {
-                    eprintln!("epitropos: backend file {path}: {e}");
+                    eprintln!("epitropos: backend {path}: {e}");
                     continue;
                 }
             },
@@ -135,15 +132,13 @@ fn run() -> Result<(), String> {
 
     let command = detect_command();
     let shell_env = env::build_shell_env(&session_id);
-    let shell_pid =
-        process::spawn_shell(slave_fd, &user, &real_shell, &shell_env, command.as_deref())?;
+    let shell_pid = process::spawn_shell(slave_fd, &real_shell, &shell_env, command.as_deref())?;
 
     unsafe { libc::close(slave_fd) };
     utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
 
-    let proxy_uid = process::resolve_uid(&cfg.general.session_proxy_user)?;
-    let proxy_gid = process::resolve_gid(&cfg.general.session_proxy_group)?;
-    process::drop_privileges(proxy_uid, proxy_gid)?;
+    // Proxy already runs as session-proxy (setuid). Just harden.
+    process::harden_proxy();
 
     #[cfg(target_arch = "x86_64")]
     seccomp::install_filter();
@@ -183,7 +178,7 @@ fn run() -> Result<(), String> {
     }
 
     if result.recording_failed {
-        let reason = result.failure_reason.as_deref().unwrap_or("unknown error");
+        let reason = result.failure_reason.as_deref().unwrap_or("unknown");
         eprintln!("epitropos: recording failed: {reason}");
         log::recording_interrupted(&session_id, &user.username, reason, 0.0);
         run_failure_hook(&cfg, &session_id, &user.username, &result.failure_reason);
@@ -196,6 +191,26 @@ fn run() -> Result<(), String> {
 
     log::session_end(&session_id, &user.username, 0.0, result.shell_exit_code);
     std::process::exit(result.shell_exit_code);
+}
+
+/// Resolve shell from argv0 symlink or config, validate against allowed shells.
+fn resolve_shell(cfg: &config::Config, username: &str) -> String {
+    if let Some(decoded) = decode_shell_from_argv0() {
+        if !decoded.starts_with('/') {
+            eprintln!("epitropos: ignoring non-absolute argv0 shell: {decoded}");
+        } else if decoded.contains("..") {
+            eprintln!("epitropos: ignoring argv0 shell with ..: {decoded}");
+        } else {
+            // Validate: must be the default shell or in the per-user map.
+            let allowed =
+                cfg.shell.default == decoded || cfg.shell.users.values().any(|s| s == &decoded);
+            if allowed {
+                return decoded;
+            }
+            eprintln!("epitropos: argv0 shell not in config allowlist: {decoded}");
+        }
+    }
+    cfg.shell.resolve(username).to_string()
 }
 
 fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
@@ -214,17 +229,14 @@ fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
 
 fn handle_startup_failure(
     fail_mode: FailMode,
-    user: &process::UserInfo,
     real_shell: &str,
     reason: &str,
 ) -> Result<(), String> {
     match fail_mode {
-        FailMode::Closed => Err(format!("session recording failed: {reason}")),
+        FailMode::Closed => Err(format!("recording failed: {reason}")),
         FailMode::Open => {
-            eprintln!(
-                "epitropos: warning: recording unavailable ({reason}), proceeding without recording"
-            );
-            process::become_user(user)?;
+            eprintln!("epitropos: proceeding without recording ({reason})");
+            process::drop_to_real_user()?;
             exec_shell_path(real_shell)?;
             unreachable!();
         }
@@ -232,23 +244,15 @@ fn handle_startup_failure(
 }
 
 fn exec_shell_path(shell_path: &str) -> Result<(), String> {
-    let c_shell =
-        CString::new(shell_path.as_bytes()).map_err(|e| format!("invalid shell path: {e}"))?;
+    process::drop_to_real_user().ok();
+    let c_shell = CString::new(shell_path.as_bytes()).map_err(|_| "null byte in shell")?;
     let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
-    let login_name = format!("-{base}");
-    let c_login_name =
-        CString::new(login_name.as_bytes()).map_err(|e| format!("invalid login name: {e}"))?;
-
-    let argv: &[*const libc::c_char] = &[c_login_name.as_ptr(), std::ptr::null()];
+    let c_argv0 = CString::new(format!("-{base}")).map_err(|_| "null byte in argv0")?;
+    let argv: &[*const libc::c_char] = &[c_argv0.as_ptr(), std::ptr::null()];
     unsafe { libc::execv(c_shell.as_ptr(), argv.as_ptr()) };
-    Err(format!(
-        "execv({}) failed: {}",
-        shell_path,
-        std::io::Error::last_os_error()
-    ))
+    Err(format!("execv failed: {}", std::io::Error::last_os_error()))
 }
 
-/// Decode shell from argv0: "epitropos-shell-bin-zsh" → "/bin/zsh"
 fn decode_shell_from_argv0() -> Option<String> {
     let argv0 = std::env::args().next()?;
     let basename = argv0.rsplit('/').next().unwrap_or(&argv0);
@@ -257,7 +261,6 @@ fn decode_shell_from_argv0() -> Option<String> {
     if encoded.is_empty() {
         return None;
     }
-
     let mut decoded = String::new();
     let mut chars = encoded.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -302,18 +305,12 @@ fn detect_command() -> Option<String> {
 fn set_raw_mode(fd: RawFd) -> Result<libc::termios, String> {
     let mut orig: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(fd, &mut orig) } < 0 {
-        return Err(format!(
-            "tcgetattr failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("tcgetattr: {}", std::io::Error::last_os_error()));
     }
     let mut raw = orig;
     unsafe { libc::cfmakeraw(&mut raw) };
     if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } < 0 {
-        return Err(format!(
-            "tcsetattr failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return Err(format!("tcsetattr: {}", std::io::Error::last_os_error()));
     }
     Ok(orig)
 }
@@ -332,7 +329,6 @@ fn run_failure_hook(
     if hook.is_empty() {
         return;
     }
-
     let c_hook = match CString::new(hook.as_bytes()) {
         Ok(s) => s,
         Err(_) => return,
@@ -348,8 +344,7 @@ fn run_failure_hook(
         Err(_) => return,
     };
     let c_reason_flag = CString::new("--reason").unwrap();
-    let reason_str = reason.as_deref().unwrap_or("unknown");
-    let c_reason = match CString::new(reason_str) {
+    let c_reason = match CString::new(reason.as_deref().unwrap_or("unknown")) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -357,7 +352,9 @@ fn run_failure_hook(
     let pid = unsafe { libc::fork() };
     match pid {
         -1 => {}
-        0 => {
+        0 => unsafe {
+            // Close pipe fds to prevent injection into recording
+            crate::pty::close_fds_above(3);
             let argv: &[*const libc::c_char] = &[
                 c_hook.as_ptr(),
                 c_sid_flag.as_ptr(),
@@ -368,11 +365,9 @@ fn run_failure_hook(
                 c_reason.as_ptr(),
                 std::ptr::null(),
             ];
-            unsafe {
-                libc::execv(c_hook.as_ptr(), argv.as_ptr());
-                libc::_exit(1);
-            }
-        }
+            libc::execv(c_hook.as_ptr(), argv.as_ptr());
+            libc::_exit(1);
+        },
         child_pid => {
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(5);

@@ -63,20 +63,42 @@ pub fn install_filter() {
         // offset of seccomp_data.nr (syscall number)
         const NR_OFFSET: u32 = 0;
 
+        const SYS_FSTAT: u32 = 5;
+        const SYS_LSEEK: u32 = 8;
+        const SYS_ACCESS: u32 = 21;
+        const SYS_DUP: u32 = 32;
+        const SYS_DUP2: u32 = 33;
+        const SYS_RT_SIGACTION: u32 = 13;
+        const SYS_RT_SIGPROCMASK: u32 = 14;
+        const SYS_OPENAT: u32 = 257;
+        const SYS_NEWFSTATAT: u32 = 262;
+        const SYS_SCHED_YIELD: u32 = 24;
+        const SYS_GETDENTS64: u32 = 217;
+        const SYS_PRLIMIT64: u32 = 302;
+        const SYS_RSEQ: u32 = 334;
+        const SYS_SET_ROBUST_LIST: u32 = 273;
+
         let allowed: &[u32] = &[
             SYS_READ,
             SYS_WRITE,
             SYS_CLOSE,
+            SYS_FSTAT,
+            SYS_LSEEK,
             SYS_POLL,
             SYS_PPOLL,
             SYS_PSELECT6,
             SYS_IOCTL,
+            SYS_ACCESS,
+            SYS_DUP,
+            SYS_DUP2,
             SYS_NANOSLEEP,
             SYS_CLOCK_NANOSLEEP,
             SYS_KILL,
             SYS_WAIT4,
             SYS_CLOCK_GETTIME,
             SYS_RT_SIGRETURN,
+            SYS_RT_SIGACTION,
+            SYS_RT_SIGPROCMASK,
             SYS_SIGALTSTACK,
             SYS_EXIT_GROUP,
             SYS_EXIT,
@@ -88,6 +110,13 @@ pub fn install_filter() {
             SYS_GETRANDOM,
             SYS_FCNTL,
             SYS_GETPID,
+            SYS_OPENAT,
+            SYS_NEWFSTATAT,
+            SYS_SCHED_YIELD,
+            SYS_GETDENTS64,
+            SYS_PRLIMIT64,
+            SYS_RSEQ,
+            SYS_SET_ROBUST_LIST,
         ];
 
         // Build BPF program: load syscall nr, check each allowed, kill otherwise

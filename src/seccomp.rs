@@ -44,7 +44,9 @@ pub fn install_filter() {
         const BPF_RET: u16 = 0x06;
 
         const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
-        const SECCOMP_RET_KILL_PROCESS: u32 = 0x80000000;
+        // LOG mode: disallowed syscalls are logged to audit but not killed.
+        // Switch to 0x80000000 (KILL) after profiling the exact syscall set.
+        const SECCOMP_RET_DEFAULT: u32 = 0x7ffc0000; // SECCOMP_RET_LOG
 
         #[repr(C)]
         struct SockFilter {
@@ -77,6 +79,19 @@ pub fn install_filter() {
         const SYS_PRLIMIT64: u32 = 302;
         const SYS_RSEQ: u32 = 334;
         const SYS_SET_ROBUST_LIST: u32 = 273;
+        const SYS_UNLINK: u32 = 87;
+        const SYS_UNLINKAT: u32 = 263;
+        const SYS_WRITEV: u32 = 20;
+        const SYS_READV: u32 = 19;
+        const SYS_PWRITE64: u32 = 18;
+        const SYS_PREAD64: u32 = 17;
+        const SYS_SENDTO: u32 = 44;
+        const SYS_CONNECT: u32 = 42;
+        const SYS_SOCKET: u32 = 41;
+        const SYS_GETTID: u32 = 186;
+        const SYS_TGKILL: u32 = 234;
+        const SYS_CLONE3: u32 = 435;
+        const SYS_CLONE: u32 = 56;
 
         let allowed: &[u32] = &[
             SYS_READ,
@@ -117,6 +132,19 @@ pub fn install_filter() {
             SYS_PRLIMIT64,
             SYS_RSEQ,
             SYS_SET_ROBUST_LIST,
+            SYS_UNLINK,
+            SYS_UNLINKAT,
+            SYS_WRITEV,
+            SYS_READV,
+            SYS_PWRITE64,
+            SYS_PREAD64,
+            SYS_SENDTO,
+            SYS_CONNECT,
+            SYS_SOCKET,
+            SYS_GETTID,
+            SYS_TGKILL,
+            SYS_CLONE3,
+            SYS_CLONE,
         ];
 
         // Build BPF program: load syscall nr, check each allowed, kill otherwise
@@ -146,7 +174,7 @@ pub fn install_filter() {
             code: BPF_RET | BPF_K,
             jt: 0,
             jf: 0,
-            k: SECCOMP_RET_KILL_PROCESS,
+            k: SECCOMP_RET_DEFAULT,
         });
 
         // Allow

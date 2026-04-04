@@ -204,13 +204,18 @@ pub fn run(
             }
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.user_stdout, data);
-            if !recording_failed && rate_limiter.check(data.len()) {
-                if let Err(e) = recorder.write_output(writer, data) {
-                    recording_failed = true;
-                    failure_reason = Some(e);
-                    break 'event_loop;
+            if !recording_failed {
+                if rate_limiter.check(data.len()) {
+                    if let Err(e) = recorder.write_output(writer, data) {
+                        recording_failed = true;
+                        failure_reason = Some(e);
+                        break 'event_loop;
+                    }
+                    let _ = recorder.write_output(extra, data);
+                } else {
+                    let _ = recorder
+                        .write_output(writer, b"[epitropos: output suppressed by rate limit]\r\n");
                 }
-                let _ = recorder.write_output(extra, data);
             }
         }
 

@@ -122,8 +122,7 @@ fn allowed_syscalls() -> Vec<u32> {
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn allowed_syscalls() -> Vec<u32> {
-    eprintln!("epitropos: seccomp not supported on this architecture");
-    vec![]
+    compile_error!("seccomp syscall table not defined for this architecture — add it or disable seccomp");
 }
 
 fn install_bpf(allowed: &[u32]) {

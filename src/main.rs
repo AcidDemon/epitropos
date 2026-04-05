@@ -33,19 +33,23 @@ fn run() -> Result<(), String> {
     let cfg = config::load()?;
     let user = process::resolve_caller()?;
 
-    // Nesting: audit session lock + env var fallback.
+    // Nesting: flock-based audit session lock.
     let audit_session_id = process::get_audit_session_id();
-    if process::is_nested_session(audit_session_id) {
-        let real_shell = cfg.shell.resolve(&user.username);
-        log::nesting_skip(
-            &audit_session_id.map_or("none".into(), |id| id.to_string()),
-            &user.username,
-            "nested",
-        );
-        process::drop_to_real_user()?;
-        exec_shell_path(real_shell)?;
-        unreachable!();
-    }
+    let _session_lock = match process::is_nested_session(audit_session_id) {
+        Some(guard) => Some(guard),
+        None if audit_session_id.is_some() => {
+            let real_shell = cfg.shell.resolve(&user.username);
+            log::nesting_skip(
+                &audit_session_id.map_or("none".into(), |id| id.to_string()),
+                &user.username,
+                "nested",
+            );
+            process::drop_to_real_user()?;
+            exec_shell_path(real_shell)?;
+            unreachable!();
+        }
+        None => None,
+    };
 
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
     let session_id = session_id::generate()?;
@@ -131,13 +135,19 @@ fn run() -> Result<(), String> {
 
     let command = detect_command();
     let shell_env = env::build_shell_env(&session_id);
-    let shell_pid = process::spawn_shell(slave_fd, &real_shell, &shell_env, command.as_deref())?;
+    let ns_exec = if std::path::Path::new(&cfg.general.ns_exec_path).exists() {
+        Some(cfg.general.ns_exec_path.as_str())
+    } else {
+        eprintln!("epitropos: ns_exec not found at {}, no PID isolation", cfg.general.ns_exec_path);
+        None
+    };
+    let shell_pid = process::spawn_shell(slave_fd, &real_shell, &shell_env, command.as_deref(), ns_exec)?;
 
     unsafe { libc::close(slave_fd) };
     utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
 
     // Proxy already runs as session-proxy (setuid). Just harden.
-    process::harden_proxy();
+    process::harden_proxy()?;
 
     seccomp::install_filter();
 
@@ -183,9 +193,7 @@ fn run() -> Result<(), String> {
     }
 
     utmp::remove_entry(&pty.slave_path, shell_pid);
-    if let Some(asid) = audit_session_id {
-        process::release_session_lock(asid);
-    }
+    // _session_lock OwnedFd drops here, releasing the flock automatically.
 
     log::session_end(&session_id, &user.username, 0.0, result.shell_exit_code);
     std::process::exit(result.shell_exit_code);
@@ -351,8 +359,11 @@ fn run_failure_hook(
     match pid {
         -1 => {}
         0 => unsafe {
-            // Close pipe fds to prevent injection into recording
             crate::pty::close_fds_above(3);
+            // Drop to calling user before exec
+            if process::drop_to_real_user().is_err() {
+                libc::_exit(1);
+            }
             let argv: &[*const libc::c_char] = &[
                 c_hook.as_ptr(),
                 c_sid_flag.as_ptr(),

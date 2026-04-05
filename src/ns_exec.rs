@@ -3,6 +3,16 @@
 // Deployed with cap_sys_admin+ep file capability.
 
 use std::ffi::CString;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn forward_signal(sig: libc::c_int) {
+    let pid = CHILD_PID.load(Ordering::Relaxed);
+    if pid > 0 {
+        unsafe { libc::kill(pid, sig) };
+    }
+}
 
 fn die(msg: &str) -> ! {
     eprintln!("epitropos-ns-exec: {msg}");
@@ -103,6 +113,18 @@ fn main() {
         child_pid => {
             // Parent — wait for child, propagate exit status.
             drop_all_caps();
+
+            CHILD_PID.store(child_pid, Ordering::Relaxed);
+
+            let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+            sa.sa_sigaction = forward_signal as *const () as usize;
+            sa.sa_flags = libc::SA_RESTART;
+            unsafe {
+                libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+                libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
+                libc::sigaction(libc::SIGHUP, &sa, std::ptr::null_mut());
+                libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+            }
             let mut status: libc::c_int = 0;
             loop {
                 let ret = unsafe { libc::waitpid(child_pid, &mut status, 0) };

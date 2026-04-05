@@ -124,9 +124,17 @@ impl Shell {
 #[derive(Debug, Deserialize)]
 pub struct General {
     pub katagrapho_path: String,
+    #[serde(default = "General::default_ns_exec_path")]
+    pub ns_exec_path: String,
     #[serde(default)]
     pub record_input: bool,
     pub latency: Option<u64>,
+}
+
+impl General {
+    fn default_ns_exec_path() -> String {
+        "/run/wrappers/bin/epitropos-ns-exec".to_string()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +188,7 @@ mod tests {
         let toml = r#"
 [general]
 katagrapho_path = "/usr/local/bin/katagrapho"
+ns_exec_path = "/usr/local/bin/epitropos-ns-exec"
 session_proxy_user = "session-proxy"
 session_proxy_group = "session-proxy"
 record_input = true
@@ -206,6 +215,7 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         let cfg: Config = toml::from_str(toml).expect("should parse full config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/local/bin/katagrapho");
+        assert_eq!(cfg.general.ns_exec_path, "/usr/local/bin/epitropos-ns-exec");
         assert!(cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/bash");
@@ -251,6 +261,7 @@ default = "open"
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/bin/katagrapho");
+        assert_eq!(cfg.general.ns_exec_path, "/run/wrappers/bin/epitropos-ns-exec");
         assert!(!cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/sh");

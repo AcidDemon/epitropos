@@ -1,5 +1,5 @@
 use std::ffi::{CStr, CString};
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};
 
 const LOCK_DIR: &str = "/var/run/epitropos";
 
@@ -31,49 +31,39 @@ pub fn get_audit_session_id() -> Option<u32> {
     Some(id)
 }
 
-pub fn try_session_lock(audit_session_id: u32) -> Result<bool, String> {
+/// Acquire flock on session lock file. Returns held fd or None if nested.
+pub fn try_session_lock(audit_session_id: u32) -> Result<Option<OwnedFd>, String> {
     let lock_path = format!("{LOCK_DIR}/session.{audit_session_id}.lock");
     let c_path = CString::new(lock_path.as_str()).unwrap();
 
     let fd = unsafe {
         libc::open(
             c_path.as_ptr(),
-            libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+            libc::O_CREAT | libc::O_RDWR | libc::O_CLOEXEC,
             0o600,
         )
     };
+    if fd < 0 {
+        return Err(format!("session lock open: {}", std::io::Error::last_os_error()));
+    }
 
-    if fd >= 0 {
-        unsafe { libc::close(fd) };
-        Ok(true)
-    } else {
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } < 0 {
         let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EEXIST) {
-            Ok(false)
-        } else {
-            Err(format!("session lock: {err}"))
+        unsafe { libc::close(fd) };
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
         }
+        return Err(format!("session lock flock: {err}"));
     }
+
+    Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
-pub fn release_session_lock(audit_session_id: u32) {
-    let lock_path = format!("{LOCK_DIR}/session.{audit_session_id}.lock");
-    let _ = std::fs::remove_file(lock_path);
-}
-
-/// Check if we're inside an existing epitropos session.
-/// Uses audit session lock first, falls back to env var.
-pub fn is_nested_session(audit_session_id: Option<u32>) -> bool {
-    if let Some(asid) = audit_session_id {
-        match try_session_lock(asid) {
-            Ok(true) => return false, // we got the lock, not nested
-            Ok(false) => return true, // lock held, nested
-            Err(_) => {}              // fall through to env check
-        }
-    }
-    // Fallback: env var (user can't spoof this in a setuid context because
-    // env::sanitize already ran and only passes through known-safe vars)
-    std::env::var("EPITROPOS_SESSION_ID").is_ok()
+/// Returns Some(guard) if lock acquired (not nested), None if nested.
+/// Caller must hold the OwnedFd for session lifetime.
+pub fn is_nested_session(audit_session_id: Option<u32>) -> Option<OwnedFd> {
+    let asid = audit_session_id?;
+    try_session_lock(asid).unwrap_or_default()
 }
 
 pub fn resolve_caller() -> Result<UserInfo, String> {
@@ -132,12 +122,15 @@ pub fn verify_suid_context() -> Result<(), String> {
     Ok(())
 }
 
-/// Harden the proxy process: disable ptrace, core dumps.
-pub fn harden_proxy() {
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64);
-        libc::prctl(libc::PR_SET_PTRACER, 0_u64, 0_u64, 0_u64, 0_u64);
+pub fn harden_proxy() -> Result<(), String> {
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
+        return Err(format!("PR_SET_DUMPABLE: {}", std::io::Error::last_os_error()));
     }
+    // Yama LSM may not be present
+    if unsafe { libc::prctl(libc::PR_SET_PTRACER, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
+        eprintln!("epitropos: PR_SET_PTRACER: {}", std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Drop the shell child back to the real user identity.
@@ -206,6 +199,7 @@ pub fn spawn_katagrapho(
             if libc::dup2(pipe_read, libc::STDIN_FILENO) < 0 {
                 libc::_exit(1);
             }
+            crate::pty::close_fds_above(libc::STDIN_FILENO + 1);
             let arg_flag = CString::new("--session-id").unwrap();
             let mut argv_owned: Vec<&CStr> = vec![
                 c_path.as_c_str(),
@@ -235,6 +229,7 @@ pub fn spawn_shell(
     shell_path: &str,
     shell_env: &[(String, String)],
     command: Option<&str>,
+    ns_exec_path: Option<&str>,
 ) -> Result<libc::pid_t, String> {
     let c_shell = CString::new(shell_path.as_bytes()).map_err(|_| "null byte in shell path")?;
 
@@ -288,9 +283,30 @@ pub fn spawn_shell(
                 std::env::set_var(k, v);
             }
 
-            let mut argv_ptrs: Vec<*const libc::c_char> = vec![argv0.as_ptr()];
-            for arg in &extra_args {
-                argv_ptrs.push(arg.as_ptr());
+            // Build shell argv
+            let mut shell_argv_owned: Vec<CString> = vec![argv0];
+            for arg in extra_args {
+                shell_argv_owned.push(arg);
+            }
+
+            // Try PID namespace isolation via helper
+            if let Some(ns_path) = ns_exec_path
+                && let Ok(c_ns) = CString::new(ns_path)
+            {
+                // argv: [ns_exec_path, shell_path, argv0, args...]
+                let mut ns_argv: Vec<*const libc::c_char> = vec![c_ns.as_ptr(), c_shell.as_ptr()];
+                for a in &shell_argv_owned {
+                    ns_argv.push(a.as_ptr());
+                }
+                ns_argv.push(std::ptr::null());
+                libc::execv(c_ns.as_ptr(), ns_argv.as_ptr());
+                // execv failed — fall through
+            }
+
+            // Direct exec (fallback)
+            let mut argv_ptrs: Vec<*const libc::c_char> = Vec::new();
+            for a in &shell_argv_owned {
+                argv_ptrs.push(a.as_ptr());
             }
             argv_ptrs.push(std::ptr::null());
             libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());

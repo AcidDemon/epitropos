@@ -26,6 +26,7 @@ let
     [general]
     katagrapho_path = "/run/wrappers/bin/katagrapho"
     record_input = ${if cfg.recordInput then "true" else "false"}
+    ns_exec_path = "/run/wrappers/bin/epitropos-ns-exec"
 
     [shell]
     default = "${cfg.shell.default}"
@@ -181,6 +182,15 @@ in
       group = cfg.proxyGroup;
       setuid = true;
       permissions = "u+rx,g+rx,o+rx";
+    };
+
+    security.wrappers.epitropos-ns-exec = {
+      source = "${cfg.package}/bin/epitropos-ns-exec";
+      owner = "root";
+      group = cfg.proxyGroup;
+      capabilities = "cap_sys_admin+ep";
+      setuid = false;
+      permissions = "u+rx,g+rx,o-rwx";
     };
 
     environment.etc."epitropos/config.toml" = {

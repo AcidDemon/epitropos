@@ -45,16 +45,17 @@ fn drop_all_caps() {
     };
     let data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
 
-    unsafe {
-        libc::syscall(libc::SYS_capset, &header, data.as_ptr());
+    if unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) } != 0 {
+        die(&format!("capset: {}", std::io::Error::last_os_error()));
     }
 
-    // Drop bounding set caps
     for cap in 0..64u64 {
         unsafe { libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0) };
     }
 
-    unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        die(&format!("PR_SET_NO_NEW_PRIVS: {}", std::io::Error::last_os_error()));
+    }
 }
 
 fn main() {

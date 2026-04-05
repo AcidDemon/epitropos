@@ -20,7 +20,6 @@ fn is_safe_for_proxy(key: &str) -> bool {
         "HOME" | "USER" | "LOGNAME" | "SHELL" | "TERM" | "PATH" | "LANG" | "TZ"
     ) || key.starts_with("SSH_")
         || key.starts_with("LC_")
-        || key == "EPITROPOS_SESSION_ID"
 }
 
 pub fn build_shell_env(session_id: &str) -> Vec<(String, String)> {

@@ -37,11 +37,14 @@ fn allowed_syscalls() -> Vec<u32> {
         42,  // connect
         44,  // sendto
         56,  // clone
+        59,  // execve (forked hook child)
         60,  // exit
         61,  // wait4
         62,  // kill
         72,  // fcntl
         87,  // unlink
+        117, // setresuid (hook privilege drop)
+        119, // setresgid (hook privilege drop)
         131, // sigaltstack
         186, // gettid
         202, // futex
@@ -95,12 +98,15 @@ fn allowed_syscalls() -> Vec<u32> {
         203, // connect
         206, // sendto
         220, // clone
+        221, // execve (forked hook child)
         93,  // exit
         95,  // wait4 (waitid: 95)
         260, // wait4
         129, // kill
         25,  // fcntl
         35,  // unlinkat
+        117, // setresuid (hook privilege drop)
+        119, // setresgid (hook privilege drop)
         132, // sigaltstack
         178, // gettid
         98,  // futex
@@ -137,8 +143,7 @@ fn install_bpf(allowed: &[u32]) {
     const BPF_RET: u16 = 0x06;
 
     const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
-    // LOG for now — switch to 0x80000000 (KILL) after profiling on target.
-    const SECCOMP_RET_DEFAULT: u32 = 0x7ffc0000;
+    const SECCOMP_RET_DEFAULT: u32 = 0x80000000; // KILL_PROCESS
 
     #[repr(C)]
     struct SockFilter {
@@ -194,14 +199,27 @@ fn install_bpf(allowed: &[u32]) {
     };
 
     unsafe {
-        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-        libc::prctl(
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            eprintln!(
+                "epitropos: fatal: PR_SET_NO_NEW_PRIVS failed: {}",
+                std::io::Error::last_os_error()
+            );
+            libc::_exit(1);
+        }
+        if libc::prctl(
             libc::PR_SET_SECCOMP,
             2,
             &prog as *const SockFprog as libc::c_ulong,
             0,
             0,
-        );
+        ) != 0
+        {
+            eprintln!(
+                "epitropos: fatal: PR_SET_SECCOMP failed: {}",
+                std::io::Error::last_os_error()
+            );
+            libc::_exit(1);
+        }
     }
 
     mem::forget(insns);

@@ -26,6 +26,10 @@ path = "src/play.rs"
 name = "epitropos-forward"
 path = "src/forward.rs"
 
+[[bin]]
+name = "epitropos-ns-exec"
+path = "src/ns_exec.rs"
+
 [profile.release]
 opt-level = "s"
 lto = true

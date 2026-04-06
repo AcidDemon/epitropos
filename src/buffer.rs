@@ -91,6 +91,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn marks_broken_on_closed_pipe() {
+        let mut fds = [0i32; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let mut buf = FlushBuffer::new(fds[1], 60);
+        unsafe { libc::close(fds[0]) }; // close read end
+
+        let big = vec![0u8; 65 * 1024];
+        let result = Write::write_all(&mut buf, &big);
+        assert!(result.is_err() || buf.is_broken());
+
+        unsafe { libc::close(fds[1]) };
+    }
+
+    #[test]
+    fn rejects_writes_when_broken() {
+        let mut fds = [0i32; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let mut buf = FlushBuffer::new(fds[1], 60);
+        unsafe { libc::close(fds[0]) };
+
+        let big = vec![0u8; 65 * 1024];
+        let _ = Write::write_all(&mut buf, &big);
+
+        // Subsequent writes should fail immediately
+        let result = Write::write(&mut buf, b"hello");
+        assert!(result.is_err());
+
+        unsafe { libc::close(fds[1]) };
+    }
+
+    #[test]
     fn buffers_until_capacity() {
         let mut fds = [0i32; 2];
         unsafe { libc::pipe(fds.as_mut_ptr()) };

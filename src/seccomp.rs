@@ -239,3 +239,46 @@ fn install_bpf(allowed: &[u32]) {
     }
     // insns drops here — kernel already copied the BPF program during prctl
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syscall_list_within_bpf_jump_limit() {
+        let syscalls = allowed_syscalls();
+        assert!(
+            syscalls.len() <= 254,
+            "allowed syscalls ({}) exceeds BPF u8 jump limit",
+            syscalls.len()
+        );
+    }
+
+    #[test]
+    fn no_duplicate_syscalls() {
+        let syscalls = allowed_syscalls();
+        let mut sorted = syscalls.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(syscalls.len(), sorted.len(), "duplicate syscall numbers");
+    }
+
+    #[test]
+    fn dangerous_syscalls_not_in_list() {
+        let syscalls = allowed_syscalls();
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(!syscalls.contains(&56), "clone should not be allowed");
+            assert!(!syscalls.contains(&59), "execve should not be allowed");
+            assert!(!syscalls.contains(&435), "clone3 should not be allowed");
+            assert!(!syscalls.contains(&62), "kill should not be allowed");
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert!(!syscalls.contains(&220), "clone should not be allowed");
+            assert!(!syscalls.contains(&221), "execve should not be allowed");
+            assert!(!syscalls.contains(&435), "clone3 should not be allowed");
+            assert!(!syscalls.contains(&129), "kill should not be allowed");
+        }
+    }
+}

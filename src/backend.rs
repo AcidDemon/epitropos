@@ -127,6 +127,41 @@ impl FileWriter {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailWriter;
+    impl Write for FailWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("fail"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("fail"))
+        }
+    }
+
+    #[test]
+    fn multi_writer_all_succeed() {
+        let mut mw = MultiWriter::new(vec![
+            Box::new(Vec::<u8>::new()),
+            Box::new(Vec::<u8>::new()),
+        ]);
+        assert!(mw.write(b"hello").is_ok());
+        assert_eq!(mw.write(b"hello").unwrap(), 5);
+    }
+
+    #[test]
+    fn multi_writer_returns_error_but_writes_all() {
+        let mut mw = MultiWriter::new(vec![
+            Box::new(FailWriter),
+            Box::new(Vec::<u8>::new()),
+        ]);
+        // Should return error from FailWriter but second writer still gets data
+        assert!(mw.write(b"hello").is_err());
+    }
+}
+
 impl Write for FileWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.file.write(buf)

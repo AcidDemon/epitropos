@@ -115,6 +115,67 @@ impl SignalState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_returns_false_when_no_signals() {
+        let mut fds: [RawFd; 2] = [-1, -1];
+        unsafe { libc::pipe2(fds.as_mut_ptr(), O_NONBLOCK | O_CLOEXEC) };
+
+        SIGWINCH_RECEIVED.store(false, Ordering::Release);
+        SIGCHLD_RECEIVED.store(false, Ordering::Release);
+        SIGTERM_RECEIVED.store(false, Ordering::Release);
+
+        let state = SignalState {
+            pipe_read: fds[0],
+            pipe_write: fds[1],
+        };
+        let (w, c, t) = state.drain();
+        assert!(!w);
+        assert!(!c);
+        assert!(!t);
+
+        std::mem::forget(state);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    #[test]
+    fn drain_returns_and_clears_set_flags() {
+        let mut fds: [RawFd; 2] = [-1, -1];
+        unsafe { libc::pipe2(fds.as_mut_ptr(), O_NONBLOCK | O_CLOEXEC) };
+
+        SIGWINCH_RECEIVED.store(true, Ordering::Release);
+        SIGCHLD_RECEIVED.store(false, Ordering::Release);
+        SIGTERM_RECEIVED.store(true, Ordering::Release);
+
+        let state = SignalState {
+            pipe_read: fds[0],
+            pipe_write: fds[1],
+        };
+        let (w, c, t) = state.drain();
+        assert!(w);
+        assert!(!c);
+        assert!(t);
+
+        // Flags cleared after drain
+        let (w2, c2, t2) = state.drain();
+        assert!(!w2);
+        assert!(!c2);
+        assert!(!t2);
+
+        std::mem::forget(state);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+}
+
 impl Drop for SignalState {
     fn drop(&mut self) {
         unsafe {

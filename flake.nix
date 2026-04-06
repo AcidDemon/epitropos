@@ -55,6 +55,7 @@
 
             RUSTFLAGS = builtins.concatStringsSep " " [
               "-C link-arg=-Wl,-z,relro,-z,now"
+              "-C link-arg=-pie"
               "-C panic=abort"
             ];
           };

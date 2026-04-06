@@ -17,37 +17,34 @@ let
     literalExpression
     ;
 
-  # Build the per-user shell overrides TOML fragment.
-  userShellLines = lib.concatStringsSep "\n" (
-    lib.mapAttrsToList (name: shell: ''${name} = "${shell}"'') cfg.shell.users
-  );
+  tomlFormat = pkgs.formats.toml { };
 
-  configFile = pkgs.writeText "epitropos-config.toml" ''
-    [general]
-    katagrapho_path = "/run/wrappers/bin/katagrapho"
-    record_input = ${if cfg.recordInput then "true" else "false"}
-    ns_exec_path = "/run/wrappers/bin/epitropos-ns-exec"
-
-    [shell]
-    default = "${cfg.shell.default}"
-    [shell.users]
-    ${userShellLines}
-
-    [encryption]
-    enabled = ${if cfg.encryption.enable then "true" else "false"}
-    recipient_file = "${if cfg.encryption.recipientFile != null then cfg.encryption.recipientFile else ""}"
-
-    [fail_policy]
-    default = "${cfg.failPolicy.default}"
-    open_for_groups = [${lib.concatMapStringsSep ", " (g: ''"${g}"'') cfg.failPolicy.openForGroups}]
-    closed_for_groups = [${lib.concatMapStringsSep ", " (g: ''"${g}"'') cfg.failPolicy.closedForGroups}]
-
-    [notice]
-    text = "${cfg.noticeText}"
-
-    [hooks]
-    on_recording_failure = "${if cfg.onRecordingFailure != null then cfg.onRecordingFailure else ""}"
-  '';
+  configFile = tomlFormat.generate "epitropos-config.toml" {
+    general = {
+      katagrapho_path = "/run/wrappers/bin/katagrapho";
+      record_input = cfg.recordInput;
+      ns_exec_path = "/run/wrappers/bin/epitropos-ns-exec";
+    };
+    shell = {
+      default = cfg.shell.default;
+      users = cfg.shell.users;
+    };
+    encryption = {
+      enabled = cfg.encryption.enable;
+      recipient_file = if cfg.encryption.recipientFile != null then cfg.encryption.recipientFile else "";
+    };
+    fail_policy = {
+      default = cfg.failPolicy.default;
+      open_for_groups = cfg.failPolicy.openForGroups;
+      closed_for_groups = cfg.failPolicy.closedForGroups;
+    };
+    notice = {
+      text = cfg.noticeText;
+    };
+    hooks = {
+      on_recording_failure = if cfg.onRecordingFailure != null then cfg.onRecordingFailure else "";
+    };
+  };
 in
 {
   options.services.epitropos = {
@@ -162,7 +159,14 @@ in
 
   config = mkIf cfg.enable {
 
-    users.groups.${cfg.proxyGroup} = { };
+    assertions = [
+      {
+        assertion = config.services.katagrapho.enable or false;
+        message = "epitropos requires services.katagrapho.enable = true for session recording storage.";
+      }
+    ];
+
+    users.groups.${cfg.proxyGroup}.members = cfg.recordUsers;
 
     users.users = {
       ${cfg.proxyUser} = {
@@ -181,13 +185,15 @@ in
       owner = cfg.proxyUser;
       group = cfg.proxyGroup;
       setuid = true;
-      permissions = "u+rx,g+rx,o+rx";
+      permissions = "u+rx,g+rx,o-rwx";
     };
 
     security.wrappers.epitropos-ns-exec = {
       source = "${cfg.package}/bin/epitropos-ns-exec";
       owner = "root";
       group = cfg.proxyGroup;
+      # +ep required: unshare(2) needs CAP_SYS_ADMIN in effective set.
+      # Binary drops all caps immediately after unshare+fork.
       capabilities = "cap_sys_admin+ep";
       setuid = false;
       permissions = "u+rx,g+rx,o-rwx";

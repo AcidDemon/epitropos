@@ -1,3 +1,17 @@
+/// Capture vars the child shell needs before sanitize() strips them.
+/// Must be called before sanitize().
+pub fn stash_shell_vars() -> std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> {
+    let exact = ["DISPLAY", "LANGUAGE", "LC_ALL"];
+    let prefixes = ["XDG_"];
+
+    std::env::vars_os()
+        .filter(|(k, _)| {
+            let s = k.to_str().unwrap_or("");
+            exact.contains(&s) || prefixes.iter().any(|p| s.starts_with(p))
+        })
+        .collect()
+}
+
 pub fn sanitize() {
     let saved: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| is_safe_for_proxy(k))
@@ -22,7 +36,10 @@ fn is_safe_for_proxy(key: &str) -> bool {
         || key.starts_with("LC_")
 }
 
-pub fn build_shell_env(session_id: &str) -> Vec<(String, String)> {
+pub fn build_shell_env(
+    session_id: &str,
+    stashed: &std::collections::HashMap<std::ffi::OsString, std::ffi::OsString>,
+) -> Vec<(String, String)> {
     let exact = [
         "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "LC_ALL", "PATH",
         "DISPLAY", "TZ",
@@ -30,9 +47,20 @@ pub fn build_shell_env(session_id: &str) -> Vec<(String, String)> {
     let prefixes = ["SSH_", "XDG_", "LC_"];
 
     let mut env = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for (key, value) in std::env::vars() {
         if exact.contains(&key.as_str()) || prefixes.iter().any(|p| key.starts_with(p)) {
+            seen.insert(key.clone());
             env.push((key, value));
+        }
+    }
+    // Re-inject vars that were stripped by sanitize()
+    for (k, v) in stashed {
+        if let (Some(ks), Some(vs)) = (k.to_str(), v.to_str())
+            && !seen.contains(ks)
+            && (exact.contains(&ks) || prefixes.iter().any(|p| ks.starts_with(p)))
+        {
+            env.push((ks.to_string(), vs.to_string()));
         }
     }
     env.push(("EPITROPOS_SESSION_ID".to_string(), session_id.to_string()));
@@ -62,7 +90,8 @@ mod tests {
             std::env::set_var("HOME", "/home/test");
             std::env::set_var("EVIL", "nope");
         }
-        let env = build_shell_env("sid-1");
+        let stashed = std::collections::HashMap::new();
+        let env = build_shell_env("sid-1", &stashed);
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
         assert!(map.contains_key("HOME"));
         assert!(map.contains_key("EPITROPOS_SESSION_ID"));

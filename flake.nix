@@ -115,6 +115,13 @@
             version = "0.1.0";
           };
 
+          tests = craneLib.cargoTest {
+            inherit src;
+            pname = "epitropos";
+            version = "0.1.0";
+            strictDeps = true;
+          };
+
           vm-test = import ./tests/vm-test.nix {
             inherit pkgs;
             katagraphoFlake = katagrapho;

@@ -82,7 +82,7 @@ impl Pty {
     pub fn open_slave(&self) -> Result<RawFd, String> {
         let path = std::ffi::CString::new(self.slave_path.as_bytes())
             .map_err(|e| format!("invalid slave path: {e}"))?;
-        let fd = unsafe { libc::open(path.as_ptr(), O_RDWR | O_NOCTTY) };
+        let fd = unsafe { libc::open(path.as_ptr(), O_RDWR | O_NOCTTY | libc::O_CLOEXEC) };
         if fd < 0 {
             return Err(format!(
                 "open slave PTY '{}' failed: {}",

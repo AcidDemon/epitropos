@@ -63,7 +63,13 @@ pub fn try_session_lock(audit_session_id: u32) -> Result<Option<OwnedFd>, String
 /// Caller must hold the OwnedFd for session lifetime.
 pub fn is_nested_session(audit_session_id: Option<u32>) -> Option<OwnedFd> {
     let asid = audit_session_id?;
-    try_session_lock(asid).unwrap_or_default()
+    match try_session_lock(asid) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("epitropos: session lock failed: {e}");
+            None
+        }
+    }
 }
 
 pub fn resolve_caller() -> Result<UserInfo, String> {
@@ -92,6 +98,18 @@ pub fn user_in_group(username: &str, group_name: &str) -> bool {
         return false;
     }
     let gr = unsafe { &*gr };
+
+    // Check if the user's primary GID matches this group.
+    let c_user = match CString::new(username) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let pw = unsafe { libc::getpwnam(c_user.as_ptr()) };
+    if !pw.is_null() && unsafe { (*pw).pw_gid } == gr.gr_gid {
+        return true;
+    }
+
+    // Check supplementary membership list.
     if gr.gr_mem.is_null() {
         return false;
     }
@@ -134,10 +152,22 @@ pub fn harden_proxy() -> Result<(), String> {
 }
 
 /// Drop the shell child back to the real user identity.
-/// Uses setresuid/setresgid to irrevocably drop all privilege.
+/// Uses initgroups+setresgid+setresuid to irrevocably drop all privilege.
 pub fn drop_to_real_user() -> Result<(), String> {
     let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };
+
+    // Reset supplementary groups to match the real user.
+    let pw = unsafe { libc::getpwuid(ruid) };
+    if !pw.is_null() {
+        let username = unsafe { (*pw).pw_name };
+        if unsafe { libc::initgroups(username, rgid) } < 0 {
+            return Err(format!(
+                "initgroups failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
 
     if unsafe { libc::setresgid(rgid, rgid, rgid) } < 0 {
         return Err(format!(

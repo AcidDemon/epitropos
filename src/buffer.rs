@@ -50,10 +50,19 @@ impl FlushBuffer {
                     self.buf.len() - offset,
                 )
             };
-            if n <= 0 {
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
                 self.buf.clear();
                 self.broken = true;
                 return Err("pipe write failed".to_string());
+            }
+            if n == 0 {
+                self.buf.clear();
+                self.broken = true;
+                return Err("pipe write returned 0".to_string());
             }
             offset += n as usize;
         }

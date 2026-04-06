@@ -35,8 +35,11 @@ fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), WriteError> {
                 data.len() - offset,
             )
         };
-        if n <= 0 {
+        if n < 0 {
             let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
             return if err.raw_os_error() == Some(libc::EPIPE)
                 || err.raw_os_error() == Some(libc::EIO)
             {
@@ -44,6 +47,9 @@ fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), WriteError> {
             } else {
                 Err(WriteError::Other)
             };
+        }
+        if n == 0 {
+            return Err(WriteError::BrokenPipe);
         }
         offset += n as usize;
     }

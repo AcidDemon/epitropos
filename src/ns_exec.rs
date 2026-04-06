@@ -20,9 +20,21 @@ fn die(msg: &str) -> ! {
 }
 
 fn has_cap_sys_admin() -> bool {
-    // CAP_SYS_ADMIN = 21. Check effective set via prctl.
-    // prctl(PR_CAPBSET_READ, cap) returns 1 if in bounding set.
-    unsafe { libc::prctl(libc::PR_CAPBSET_READ, 21, 0, 0, 0) == 1 }
+    #[repr(C)]
+    struct CapHeader { version: u32, pid: i32 }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct CapData { effective: u32, permitted: u32, inheritable: u32 }
+
+    unsafe {
+        let mut header = CapHeader { version: 0x20080522, pid: 0 };
+        let mut data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
+        if libc::syscall(libc::SYS_capget, &mut header as *mut _, data.as_mut_ptr()) != 0 {
+            return false;
+        }
+        // CAP_SYS_ADMIN = 21
+        data[0].effective & (1 << 21) != 0
+    }
 }
 
 fn drop_all_caps() {

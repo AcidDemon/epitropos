@@ -201,7 +201,9 @@ in
 
     environment.etc."epitropos/config.toml" = {
       source = configFile;
-      mode = "0444";
+      mode = "0440";
+      user = cfg.proxyUser;
+      group = cfg.proxyGroup;
     };
 
     systemd.tmpfiles.rules = [

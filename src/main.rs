@@ -57,6 +57,17 @@ impl HookRunner {
             0 => unsafe {
                 libc::close(pipe_write);
 
+                // Close all inherited FDs except pipe_read before dropping privs.
+                if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+                    let fds: Vec<i32> = entries
+                        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+                        .filter(|&fd| fd >= 3 && fd != pipe_read)
+                        .collect();
+                    for fd in fds {
+                        libc::close(fd);
+                    }
+                }
+
                 if crate::process::drop_to_real_user().is_err() {
                     libc::_exit(1);
                 }
@@ -74,8 +85,6 @@ impl HookRunner {
                 let c_reason = CString::new(reason).unwrap_or_default();
                 let c_sid_flag = CString::new("--session-id").unwrap();
                 let c_user_flag = CString::new("--username").unwrap();
-
-                crate::pty::close_fds_above(3);
 
                 let argv: &[*const libc::c_char] = &[
                     c_hook.as_ptr(),
@@ -100,8 +109,26 @@ impl HookRunner {
     fn trigger(&self, reason: &str) {
         let bytes = reason.as_bytes();
         let len = bytes.len().min(256);
-        unsafe {
-            libc::write(self.pipe_write, bytes.as_ptr() as *const libc::c_void, len);
+        let mut offset = 0;
+        while offset < len {
+            let n = unsafe {
+                libc::write(
+                    self.pipe_write,
+                    bytes[offset..].as_ptr() as *const libc::c_void,
+                    len - offset,
+                )
+            };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                break;
+            }
+            if n == 0 {
+                break;
+            }
+            offset += n as usize;
         }
     }
 }
@@ -137,6 +164,7 @@ fn main() {
 fn run() -> Result<(), String> {
     process::sanitize_std_fds();
     process::verify_suid_context()?;
+    let stashed_env = env::stash_shell_vars();
     env::sanitize();
 
     let cfg = config::load()?;
@@ -243,7 +271,7 @@ fn run() -> Result<(), String> {
     let signal_state = signals::SignalState::setup()?;
 
     let command = detect_command();
-    let shell_env = env::build_shell_env(&session_id);
+    let shell_env = env::build_shell_env(&session_id, &stashed_env);
     let ns_exec = if std::path::Path::new(&cfg.general.ns_exec_path).exists() {
         Some(cfg.general.ns_exec_path.as_str())
     } else {

@@ -2,30 +2,39 @@ use std::io::Write;
 use std::os::unix::io::RawFd;
 use std::time::Instant;
 
-/// Time-windowed write buffer. Accumulates data and flushes either
-/// when the latency window expires or the buffer reaches capacity.
+/// Time-windowed write buffer with hard memory cap.
 pub struct FlushBuffer {
     buf: Vec<u8>,
     fd: RawFd,
     capacity: usize,
+    max_size: usize,
     latency_secs: u64,
     last_flush: Instant,
+    broken: bool,
 }
 
 impl FlushBuffer {
     pub fn new(fd: RawFd, latency_secs: u64) -> Self {
         let capacity = 64 * 1024;
+        let max_size = 4 * 1024 * 1024; // 4 MiB hard limit
         FlushBuffer {
             buf: Vec::with_capacity(capacity),
             fd,
             capacity,
+            max_size,
             latency_secs,
             last_flush: Instant::now(),
+            broken: false,
         }
     }
 
     pub fn should_flush(&self) -> bool {
         !self.buf.is_empty() && self.last_flush.elapsed().as_secs() >= self.latency_secs
+    }
+
+    #[allow(dead_code)]
+    pub fn is_broken(&self) -> bool {
+        self.broken
     }
 
     pub fn flush(&mut self) -> Result<(), String> {
@@ -43,6 +52,7 @@ impl FlushBuffer {
             };
             if n <= 0 {
                 self.buf.clear();
+                self.broken = true;
                 return Err("pipe write failed".to_string());
             }
             offset += n as usize;
@@ -55,8 +65,17 @@ impl FlushBuffer {
 
 impl Write for FlushBuffer {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.broken {
+            return Err(std::io::Error::other("pipe broken"));
+        }
         self.buf.extend_from_slice(data);
-        if self.buf.len() >= self.capacity {
+        if self.buf.len() >= self.max_size {
+            self.flush().map_err(std::io::Error::other)?;
+            if self.buf.len() >= self.max_size {
+                self.broken = true;
+                return Err(std::io::Error::other("buffer overflow: katagrapho pipe stalled"));
+            }
+        } else if self.buf.len() >= self.capacity {
             self.flush().map_err(std::io::Error::other)?;
         }
         Ok(data.len())

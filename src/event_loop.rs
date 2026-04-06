@@ -20,8 +20,12 @@ pub struct LoopResult {
     pub failure_reason: Option<String>,
 }
 
-/// Write all `data` bytes to `fd`, retrying on partial writes.
-fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), ()> {
+enum WriteError {
+    BrokenPipe,
+    Other,
+}
+
+fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), WriteError> {
     let mut offset = 0;
     while offset < data.len() {
         let n = unsafe {
@@ -32,7 +36,14 @@ fn write_all_fd(fd: RawFd, data: &[u8]) -> Result<(), ()> {
             )
         };
         if n <= 0 {
-            return Err(());
+            let err = std::io::Error::last_os_error();
+            return if err.raw_os_error() == Some(libc::EPIPE)
+                || err.raw_os_error() == Some(libc::EIO)
+            {
+                Err(WriteError::BrokenPipe)
+            } else {
+                Err(WriteError::Other)
+            };
         }
         offset += n as usize;
     }
@@ -57,7 +68,9 @@ fn drain_pty(
             break;
         }
         let data = &buf[..n as usize];
-        let _ = write_all_fd(user_stdout, data);
+        if let Err(WriteError::BrokenPipe) = write_all_fd(user_stdout, data) {
+            break;
+        }
         if !*recording_failed {
             if let Err(e) = recorder.write_output(writer, data) {
                 *recording_failed = true;
@@ -67,20 +80,20 @@ fn drain_pty(
     }
 }
 
-/// Reap the shell process, returning its exit code.
-fn reap_shell(shell_pid: libc::pid_t) -> i32 {
+/// Try to reap the shell process. Returns None if not yet exited.
+fn reap_shell(shell_pid: libc::pid_t) -> Option<i32> {
     let mut status: libc::c_int = 0;
     let ret = unsafe { libc::waitpid(shell_pid, &mut status, libc::WNOHANG) };
     if ret > 0 {
         if libc::WIFEXITED(status) {
-            libc::WEXITSTATUS(status)
+            Some(libc::WEXITSTATUS(status))
         } else if libc::WIFSIGNALED(status) {
-            128 + libc::WTERMSIG(status)
+            Some(128 + libc::WTERMSIG(status))
         } else {
-            1
+            Some(1)
         }
     } else {
-        1
+        None
     }
 }
 
@@ -154,8 +167,10 @@ pub fn run(
             }
 
             if chld {
-                shell_exit_code = reap_shell(cfg.shell_pid);
-                shell_exited = true;
+                if let Some(code) = reap_shell(cfg.shell_pid) {
+                    shell_exit_code = code;
+                    shell_exited = true;
+                }
             }
 
             if term {
@@ -198,12 +213,17 @@ pub fn run(
             if n <= 0 {
                 // Shell exited or PTY closed.
                 if !shell_exited {
-                    shell_exit_code = reap_shell(cfg.shell_pid);
+                    if let Some(code) = reap_shell(cfg.shell_pid) {
+                        shell_exit_code = code;
+                        shell_exited = true;
+                    }
                 }
                 break 'event_loop;
             }
             let data = &buf[..n as usize];
-            let _ = write_all_fd(cfg.user_stdout, data);
+            if let Err(WriteError::BrokenPipe) = write_all_fd(cfg.user_stdout, data) {
+                break 'event_loop;
+            }
             if !recording_failed {
                 if rate_limiter.check(data.len()) {
                     if let Err(e) = recorder.write_output(writer, data) {
@@ -253,7 +273,12 @@ pub fn run(
         }
 
         if writer.should_flush() {
-            let _ = writer.flush();
+            if let Err(e) = writer.flush() {
+                if !recording_failed {
+                    recording_failed = true;
+                    failure_reason = Some(e);
+                }
+            }
         }
     }
 

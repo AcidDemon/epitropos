@@ -14,19 +14,19 @@ static SIGNAL_PIPE_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::Atom
 pub extern "C" fn signal_handler(sig: libc::c_int) {
     match sig {
         libc::SIGWINCH => {
-            SIGWINCH_RECEIVED.store(true, Ordering::Relaxed);
+            SIGWINCH_RECEIVED.store(true, Ordering::Release);
         }
         libc::SIGCHLD => {
-            SIGCHLD_RECEIVED.store(true, Ordering::Relaxed);
+            SIGCHLD_RECEIVED.store(true, Ordering::Release);
         }
         libc::SIGTERM | libc::SIGHUP | libc::SIGINT => {
-            SIGTERM_RECEIVED.store(true, Ordering::Relaxed);
+            SIGTERM_RECEIVED.store(true, Ordering::Release);
         }
         _ => {}
     }
     // Write a single byte to wake any poll/select waiting on the read end.
     // EAGAIN is fine — the pipe already has a byte pending.
-    let wfd = SIGNAL_PIPE_WRITE.load(Ordering::Relaxed);
+    let wfd = SIGNAL_PIPE_WRITE.load(Ordering::Acquire);
     if wfd >= 0 {
         let byte: u8 = sig as u8;
         unsafe {
@@ -51,7 +51,7 @@ impl SignalState {
         let (pipe_read, pipe_write) = (fds[0], fds[1]);
 
         // Publish the write end so the handler can use it.
-        SIGNAL_PIPE_WRITE.store(pipe_write, Ordering::Relaxed);
+        SIGNAL_PIPE_WRITE.store(pipe_write, Ordering::Release);
 
         // Install the handler for each signal we care about.
         for &sig in &[
@@ -121,6 +121,6 @@ impl Drop for SignalState {
             libc::close(self.pipe_read);
             libc::close(self.pipe_write);
         }
-        SIGNAL_PIPE_WRITE.store(-1, Ordering::Relaxed);
+        SIGNAL_PIPE_WRITE.store(-1, Ordering::Release);
     }
 }

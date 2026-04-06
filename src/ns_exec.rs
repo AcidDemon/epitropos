@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn forward_signal(sig: libc::c_int) {
-    let pid = CHILD_PID.load(Ordering::Relaxed);
+    let pid = CHILD_PID.load(Ordering::Acquire);
     if pid > 0 {
         unsafe { libc::kill(pid, sig) };
     }
@@ -115,7 +115,7 @@ fn main() {
             // Parent — wait for child, propagate exit status.
             drop_all_caps();
 
-            CHILD_PID.store(child_pid, Ordering::Relaxed);
+            CHILD_PID.store(child_pid, Ordering::Release);
 
             let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
             sa.sa_sigaction = forward_signal as *const () as usize;

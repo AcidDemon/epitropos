@@ -38,21 +38,7 @@ impl RateLimiter {
             return true;
         }
 
-        match self.action {
-            RateLimitAction::Pass => true,
-            RateLimitAction::Drop => false,
-            RateLimitAction::Delay => {
-                let deficit = cost - self.tokens;
-                let wait_secs = deficit / self.rate;
-                std::thread::sleep(std::time::Duration::from_secs_f64(wait_secs));
-                self.refill();
-                self.tokens -= cost;
-                if self.tokens < 0.0 {
-                    self.tokens = 0.0;
-                }
-                true
-            }
-        }
+        false // Drop mode: not enough tokens
     }
 
     fn refill(&mut self) {

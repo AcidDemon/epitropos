@@ -22,6 +22,10 @@ impl Recorder {
         }
     }
 
+    pub fn elapsed_secs(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
+    }
+
     pub fn write_header(
         &self,
         w: &mut dyn Write,

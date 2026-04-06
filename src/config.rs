@@ -75,7 +75,6 @@ impl Default for RateLimit {
 pub enum RateLimitAction {
     #[default]
     Pass,
-    Delay,
     Drop,
 }
 

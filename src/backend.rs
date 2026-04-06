@@ -13,22 +13,35 @@ impl MultiWriter {
 
 impl Write for MultiWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut last_err = None;
         for w in &mut self.writers {
-            w.write_all(buf)?;
+            if let Err(e) = w.write_all(buf) {
+                last_err = Some(e);
+            }
         }
-        Ok(buf.len())
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(buf.len()),
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        let mut last_err = None;
         for w in &mut self.writers {
-            w.flush()?;
+            if let Err(e) = w.flush() {
+                last_err = Some(e);
+            }
         }
-        Ok(())
+        match last_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
 pub struct SyslogWriter {
     initialized: bool,
+    _ident: std::ffi::CString, // must outlive openlog
 }
 
 impl SyslogWriter {
@@ -37,8 +50,10 @@ impl SyslogWriter {
         unsafe {
             libc::openlog(c_ident.as_ptr(), libc::LOG_NDELAY, facility);
         }
-        std::mem::forget(c_ident);
-        SyslogWriter { initialized: true }
+        SyslogWriter {
+            initialized: true,
+            _ident: c_ident,
+        }
     }
 }
 
@@ -47,7 +62,9 @@ impl Write for SyslogWriter {
         if !self.initialized {
             return Ok(buf.len());
         }
-        let msg = std::ffi::CString::new(buf).unwrap_or_default();
+        // Replace NUL bytes so CString doesn't silently discard the message
+        let cleaned: Vec<u8> = buf.iter().map(|&b| if b == 0 { b'?' } else { b }).collect();
+        let msg = std::ffi::CString::new(cleaned).unwrap_or_default();
         unsafe {
             libc::syslog(libc::LOG_INFO, c"%s".as_ptr(), msg.as_ptr());
         }

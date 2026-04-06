@@ -300,7 +300,7 @@ fn run() -> Result<(), String> {
     if result.recording_failed {
         let reason = result.failure_reason.as_deref().unwrap_or("unknown");
         eprintln!("epitropos: recording failed: {reason}");
-        log::recording_interrupted(&session_id, &user.username, reason, 0.0);
+        log::recording_interrupted(&session_id, &user.username, reason, recorder.elapsed_secs());
         if let Some(ref runner) = hook_runner {
             runner.trigger(reason);
         }
@@ -309,7 +309,7 @@ fn run() -> Result<(), String> {
     utmp::remove_entry(&pty.slave_path, shell_pid);
     // _session_lock OwnedFd drops here, releasing the flock automatically.
 
-    log::session_end(&session_id, &user.username, 0.0, result.shell_exit_code);
+    log::session_end(&session_id, &user.username, recorder.elapsed_secs(), result.shell_exit_code);
     std::process::exit(result.shell_exit_code);
 }
 
@@ -364,7 +364,7 @@ fn handle_startup_failure(
 }
 
 fn exec_shell_path(shell_path: &str) -> Result<(), String> {
-    process::drop_to_real_user().ok();
+    process::drop_to_real_user()?;
     let c_shell = CString::new(shell_path.as_bytes()).map_err(|_| "null byte in shell")?;
     let base = shell_path.rsplit('/').next().unwrap_or(shell_path);
     let c_argv0 = CString::new(format!("-{base}")).map_err(|_| "null byte in argv0")?;

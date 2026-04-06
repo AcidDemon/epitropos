@@ -18,6 +18,115 @@ use std::os::unix::io::{FromRawFd, RawFd};
 
 use config::FailMode;
 
+// Pre-forked hook runner. Spawned before seccomp so the helper process
+// can fork+exec without needing those syscalls in the sandbox.
+struct HookRunner {
+    pipe_write: RawFd,
+    pid: libc::pid_t,
+}
+
+impl HookRunner {
+    fn spawn(cfg: &config::Config, session_id: &str, username: &str) -> Option<Self> {
+        let hook = &cfg.hooks.on_recording_failure;
+        if hook.is_empty() {
+            return None;
+        }
+
+        let mut fds: [RawFd; 2] = [-1, -1];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+            return None;
+        }
+        let (pipe_read, pipe_write) = (fds[0], fds[1]);
+
+        let c_hook = match CString::new(hook.as_bytes()) {
+            Ok(s) => s,
+            Err(_) => {
+                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                return None;
+            }
+        };
+        let c_sid = CString::new(session_id).ok()?;
+        let c_user = CString::new(username).ok()?;
+
+        let pid = unsafe { libc::fork() };
+        match pid {
+            -1 => {
+                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                None
+            }
+            0 => unsafe {
+                libc::close(pipe_write);
+
+                if crate::process::drop_to_real_user().is_err() {
+                    libc::_exit(1);
+                }
+
+                let mut reason_buf = [0u8; 256];
+                let n = libc::read(pipe_read, reason_buf.as_mut_ptr() as *mut libc::c_void, reason_buf.len());
+                libc::close(pipe_read);
+
+                if n <= 0 {
+                    libc::_exit(0);
+                }
+
+                let reason = std::str::from_utf8(&reason_buf[..n as usize]).unwrap_or("unknown");
+                let c_reason_flag = CString::new("--reason").unwrap();
+                let c_reason = CString::new(reason).unwrap_or_default();
+                let c_sid_flag = CString::new("--session-id").unwrap();
+                let c_user_flag = CString::new("--username").unwrap();
+
+                crate::pty::close_fds_above(3);
+
+                let argv: &[*const libc::c_char] = &[
+                    c_hook.as_ptr(),
+                    c_sid_flag.as_ptr(),
+                    c_sid.as_ptr(),
+                    c_user_flag.as_ptr(),
+                    c_user.as_ptr(),
+                    c_reason_flag.as_ptr(),
+                    c_reason.as_ptr(),
+                    std::ptr::null(),
+                ];
+                libc::execv(c_hook.as_ptr(), argv.as_ptr());
+                libc::_exit(1);
+            },
+            child_pid => {
+                unsafe { libc::close(pipe_read) };
+                Some(HookRunner { pipe_write, pid: child_pid })
+            }
+        }
+    }
+
+    fn trigger(&self, reason: &str) {
+        let bytes = reason.as_bytes();
+        let len = bytes.len().min(256);
+        unsafe {
+            libc::write(self.pipe_write, bytes.as_ptr() as *const libc::c_void, len);
+        }
+    }
+}
+
+impl Drop for HookRunner {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.pipe_write);
+            let mut status: libc::c_int = 0;
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(5);
+            loop {
+                let ret = libc::waitpid(self.pid, &mut status, libc::WNOHANG);
+                if ret != 0 { break; }
+                if start.elapsed() >= timeout {
+                    libc::kill(self.pid, libc::SIGKILL);
+                    libc::waitpid(self.pid, &mut status, 0);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 fn main() {
     if let Err(msg) = run() {
         eprintln!("epitropos: {msg}");
@@ -146,6 +255,9 @@ fn run() -> Result<(), String> {
     unsafe { libc::close(slave_fd) };
     utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
 
+    // Spawn hook runner BEFORE seccomp so it can fork+exec.
+    let hook_runner = HookRunner::spawn(&cfg, &session_id, &user.username);
+
     // Proxy already runs as session-proxy (setuid). Just harden.
     process::harden_proxy()?;
 
@@ -189,7 +301,9 @@ fn run() -> Result<(), String> {
         let reason = result.failure_reason.as_deref().unwrap_or("unknown");
         eprintln!("epitropos: recording failed: {reason}");
         log::recording_interrupted(&session_id, &user.username, reason, 0.0);
-        run_failure_hook(&cfg, &session_id, &user.username, &result.failure_reason);
+        if let Some(ref runner) = hook_runner {
+            runner.trigger(reason);
+        }
     }
 
     utmp::remove_entry(&pty.slave_path, shell_pid);
@@ -325,76 +439,3 @@ fn restore_terminal(fd: RawFd, termios: &libc::termios) {
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, termios) };
 }
 
-fn run_failure_hook(
-    cfg: &config::Config,
-    session_id: &str,
-    username: &str,
-    reason: &Option<String>,
-) {
-    let hook = &cfg.hooks.on_recording_failure;
-    if hook.is_empty() {
-        return;
-    }
-    let c_hook = match CString::new(hook.as_bytes()) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let c_sid_flag = CString::new("--session-id").unwrap();
-    let c_sid = match CString::new(session_id) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let c_user_flag = CString::new("--username").unwrap();
-    let c_user = match CString::new(username) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let c_reason_flag = CString::new("--reason").unwrap();
-    let c_reason = match CString::new(reason.as_deref().unwrap_or("unknown")) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let pid = unsafe { libc::fork() };
-    match pid {
-        -1 => {}
-        0 => unsafe {
-            crate::pty::close_fds_above(3);
-            // Drop to calling user before exec
-            if process::drop_to_real_user().is_err() {
-                libc::_exit(1);
-            }
-            let argv: &[*const libc::c_char] = &[
-                c_hook.as_ptr(),
-                c_sid_flag.as_ptr(),
-                c_sid.as_ptr(),
-                c_user_flag.as_ptr(),
-                c_user.as_ptr(),
-                c_reason_flag.as_ptr(),
-                c_reason.as_ptr(),
-                std::ptr::null(),
-            ];
-            libc::execv(c_hook.as_ptr(), argv.as_ptr());
-            libc::_exit(1);
-        },
-        child_pid => {
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(5);
-            loop {
-                let mut status: libc::c_int = 0;
-                let ret = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
-                if ret != 0 {
-                    break;
-                }
-                if start.elapsed() >= timeout {
-                    unsafe {
-                        libc::kill(child_pid, libc::SIGKILL);
-                        libc::waitpid(child_pid, &mut status, 0);
-                    }
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
-    }
-}

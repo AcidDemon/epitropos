@@ -36,15 +36,10 @@ fn allowed_syscalls() -> Vec<u32> {
         41,  // socket
         42,  // connect
         44,  // sendto
-        56,  // clone
-        59,  // execve (forked hook child)
         60,  // exit
         61,  // wait4
-        62,  // kill
         72,  // fcntl
-        87,  // unlink
-        117, // setresuid (hook privilege drop)
-        119, // setresgid (hook privilege drop)
+        73,  // flock (utmp cleanup)
         131, // sigaltstack
         186, // gettid
         202, // futex
@@ -55,14 +50,12 @@ fn allowed_syscalls() -> Vec<u32> {
         234, // tgkill
         257, // openat
         262, // newfstatat
-        263, // unlinkat
         270, // pselect6
         271, // ppoll
         273, // set_robust_list
         302, // prlimit64
         318, // getrandom
         334, // rseq
-        435, // clone3
     ]
 }
 
@@ -97,16 +90,11 @@ fn allowed_syscalls() -> Vec<u32> {
         198, // socket
         203, // connect
         206, // sendto
-        220, // clone
-        221, // execve (forked hook child)
         93,  // exit
         95,  // wait4 (waitid: 95)
         260, // wait4
-        129, // kill
         25,  // fcntl
-        35,  // unlinkat
-        117, // setresuid (hook privilege drop)
-        119, // setresgid (hook privilege drop)
+        32,  // flock (utmp cleanup)
         132, // sigaltstack
         178, // gettid
         98,  // futex
@@ -122,7 +110,6 @@ fn allowed_syscalls() -> Vec<u32> {
         261, // prlimit64
         278, // getrandom
         293, // rseq
-        435, // clone3
     ]
 }
 
@@ -131,9 +118,8 @@ fn allowed_syscalls() -> Vec<u32> {
     compile_error!("seccomp syscall table not defined for this architecture — add it or disable seccomp");
 }
 
+#[allow(clippy::vec_init_then_push)]
 fn install_bpf(allowed: &[u32]) {
-    use std::mem;
-
     const BPF_LD: u16 = 0x00;
     const BPF_W: u16 = 0x00;
     const BPF_ABS: u16 = 0x20;
@@ -143,7 +129,12 @@ fn install_bpf(allowed: &[u32]) {
     const BPF_RET: u16 = 0x06;
 
     const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
-    const SECCOMP_RET_DEFAULT: u32 = 0x80000000; // KILL_PROCESS
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x80000000;
+
+    #[cfg(target_arch = "x86_64")]
+    const EXPECTED_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
 
     #[repr(C)]
     struct SockFilter {
@@ -159,7 +150,31 @@ fn install_bpf(allowed: &[u32]) {
         filter: *const SockFilter,
     }
 
+    let n = allowed.len();
+    assert!(n <= 254, "seccomp: too many allowed syscalls for BPF u8 jump offsets");
+
     let mut insns: Vec<SockFilter> = Vec::new();
+
+    // Load arch field (offset 4 in seccomp_data)
+    insns.push(SockFilter {
+        code: BPF_LD | BPF_W | BPF_ABS,
+        jt: 0,
+        jf: 0,
+        k: 4,
+    });
+    // Kill if architecture doesn't match (prevents 32-bit syscall bypass)
+    insns.push(SockFilter {
+        code: BPF_JMP | BPF_JEQ | BPF_K,
+        jt: 1, // skip kill, continue to syscall check
+        jf: 0, // fall through to kill
+        k: EXPECTED_ARCH,
+    });
+    insns.push(SockFilter {
+        code: BPF_RET | BPF_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_KILL_PROCESS,
+    });
 
     // Load syscall number (offset 0 in seccomp_data)
     insns.push(SockFilter {
@@ -169,7 +184,6 @@ fn install_bpf(allowed: &[u32]) {
         k: 0,
     });
 
-    let n = allowed.len();
     for (i, &nr) in allowed.iter().enumerate() {
         let remaining = n - i - 1;
         insns.push(SockFilter {
@@ -180,12 +194,14 @@ fn install_bpf(allowed: &[u32]) {
         });
     }
 
+    // Default: kill
     insns.push(SockFilter {
         code: BPF_RET | BPF_K,
         jt: 0,
         jf: 0,
-        k: SECCOMP_RET_DEFAULT,
+        k: SECCOMP_RET_KILL_PROCESS,
     });
+    // Allow
     insns.push(SockFilter {
         code: BPF_RET | BPF_K,
         jt: 0,
@@ -221,6 +237,5 @@ fn install_bpf(allowed: &[u32]) {
             libc::_exit(1);
         }
     }
-
-    mem::forget(insns);
+    // insns drops here — kernel already copied the BPF program during prctl
 }

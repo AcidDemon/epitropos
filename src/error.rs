@@ -12,6 +12,7 @@ use std::io;
 pub const EX_USAGE: i32 = 64;
 pub const EX_DATAERR: i32 = 65;
 pub const EX_NOINPUT: i32 = 66;
+#[allow(dead_code)]
 pub const EX_UNAVAILABLE: i32 = 69;
 pub const EX_SOFTWARE: i32 = 70;
 pub const EX_IOERR: i32 = 74;
@@ -20,6 +21,7 @@ pub const EX_NOPERM: i32 = 77;
 pub const EX_CONFIG: i32 = 78;
 
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum EpitroposError {
     #[error("usage: {0}")]
     Usage(String),

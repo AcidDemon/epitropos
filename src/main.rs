@@ -6,6 +6,7 @@ mod env;
 mod error;
 mod event_loop;
 mod log;
+mod term_guard;
 mod process;
 mod pty;
 mod rate_limit;
@@ -299,7 +300,15 @@ fn run() -> Result<(), EpitroposError> {
     seccomp::install_filter();
 
     let is_tty = unsafe { libc::isatty(0) } == 1;
-    let saved_termios = if is_tty { Some(set_raw_mode(0)?) } else { None };
+    // RAII: terminal is restored on drop, including on panic.
+    let _term_guard = if is_tty {
+        Some(
+            term_guard::TerminalGuard::enter_raw(0)
+                .map_err(|e| EpitroposError::Privilege(format!("tcgetattr/tcsetattr: {e}")))?,
+        )
+    } else {
+        None
+    };
 
     let loop_cfg = event_loop::LoopConfig {
         user_stdin: 0,
@@ -322,9 +331,7 @@ fn run() -> Result<(), EpitroposError> {
         &mut extra,
     );
 
-    if let Some(ref termios) = saved_termios {
-        restore_terminal(0, termios);
-    }
+    // _term_guard drops here, restoring the terminal if it was captured.
 
     unsafe { libc::close(pipe_write) };
     unsafe {
@@ -455,22 +462,5 @@ fn detect_command() -> Option<String> {
         return Some(args[2..].join(" "));
     }
     std::env::var("SSH_ORIGINAL_COMMAND").ok()
-}
-
-fn set_raw_mode(fd: RawFd) -> Result<libc::termios, String> {
-    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } < 0 {
-        return Err(format!("tcgetattr: {}", std::io::Error::last_os_error()));
-    }
-    let mut raw = orig;
-    unsafe { libc::cfmakeraw(&mut raw) };
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } < 0 {
-        return Err(format!("tcsetattr: {}", std::io::Error::last_os_error()));
-    }
-    Ok(orig)
-}
-
-fn restore_terminal(fd: RawFd, termios: &libc::termios) {
-    unsafe { libc::tcsetattr(fd, libc::TCSANOW, termios) };
 }
 

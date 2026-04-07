@@ -306,6 +306,10 @@ pub fn spawn_shell(
                 libc::_exit(1);
             }
 
+            // SAFETY (edition 2024): post-fork, single-threaded child. No
+            // other thread can race on the env table because fork() copied
+            // only the calling thread. These calls are inside the parent
+            // `unsafe {}` block and are sound only under that invariant.
             for (key, _) in std::env::vars_os() {
                 std::env::remove_var(&key);
             }

@@ -177,22 +177,25 @@ fn run() -> Result<(), EpitroposError> {
     let user = process::resolve_caller().map_err(EpitroposError::Privilege)?;
 
     // Nesting: flock-based audit session lock.
+    // Fail-closed on lock errors: a silent fallback would create an
+    // auditable gap exactly when /var/run/epitropos is unreachable.
     let audit_session_id = process::get_audit_session_id();
-    let _session_lock = match process::is_nested_session(audit_session_id) {
-        Some(guard) => Some(guard),
-        None if audit_session_id.is_some() => {
-            let real_shell = cfg.shell.resolve(&user.username);
-            log::nesting_skip(
-                &audit_session_id.map_or("none".into(), |id| id.to_string()),
-                &user.username,
-                "nested",
-            );
-            process::drop_to_real_user()?;
-            exec_shell_path(real_shell)?;
-            unreachable!();
-        }
-        None => None,
-    };
+    let _session_lock =
+        match process::check_nesting(audit_session_id).map_err(EpitroposError::Nesting)? {
+            process::NestStatus::Outer(fd) => Some(fd),
+            process::NestStatus::NoAuditSession => None,
+            process::NestStatus::Nested => {
+                let real_shell = cfg.shell.resolve(&user.username);
+                log::nesting_skip(
+                    &audit_session_id.map_or("none".into(), |id| id.to_string()),
+                    &user.username,
+                    "nested",
+                );
+                process::drop_to_real_user().map_err(EpitroposError::Privilege)?;
+                exec_shell_path(real_shell).map_err(EpitroposError::from)?;
+                unreachable!();
+            }
+        };
 
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
     let session_id = session_id::generate()?;

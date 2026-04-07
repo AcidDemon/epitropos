@@ -59,16 +59,35 @@ pub fn try_session_lock(audit_session_id: u32) -> Result<Option<OwnedFd>, String
     Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
-/// Returns Some(guard) if lock acquired (not nested), None if nested.
-/// Caller must hold the OwnedFd for session lifetime.
-pub fn is_nested_session(audit_session_id: Option<u32>) -> Option<OwnedFd> {
-    let asid = audit_session_id?;
-    match try_session_lock(asid) {
-        Ok(guard) => guard,
-        Err(e) => {
-            eprintln!("epitropos: session lock failed: {e}");
-            None
-        }
+/// Result of a nesting check.
+pub enum NestStatus {
+    /// Kernel audit not available or no audit session assigned: skip
+    /// nesting detection, caller proceeds to record as a fresh session.
+    NoAuditSession,
+    /// Lock acquired — this is the outer session. Caller must hold the
+    /// OwnedFd for the session lifetime.
+    Outer(OwnedFd),
+    /// Another process already holds the lock for this audit session id
+    /// — we're nested inside an existing recording.
+    Nested,
+}
+
+/// Check whether the current process is a nested session.
+///
+/// Returns Err on real lock-system failures (e.g. /var/run/epitropos
+/// unreadable, flock returns an unexpected errno). The caller MUST
+/// treat Err as fail-closed: a silent "no lock file so record as
+/// fresh" fallback would create an auditable gap when the lock
+/// directory is unreachable, which is exactly the case an attacker
+/// would try to create.
+pub fn check_nesting(audit_session_id: Option<u32>) -> Result<NestStatus, String> {
+    let asid = match audit_session_id {
+        Some(id) => id,
+        None => return Ok(NestStatus::NoAuditSession),
+    };
+    match try_session_lock(asid)? {
+        Some(fd) => Ok(NestStatus::Outer(fd)),
+        None => Ok(NestStatus::Nested),
     }
 }
 

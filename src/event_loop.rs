@@ -11,6 +11,11 @@ pub struct LoopConfig {
     pub pty_master: RawFd,
     pub signal_pipe: RawFd,
     pub shell_pid: libc::pid_t,
+    /// Katagrapho writer child pid. When it exits, the event loop tears
+    /// down the session immediately with `recording_failed = true` so
+    /// we don't lose up to `latency` seconds of buffered output before
+    /// the next flush fails.
+    pub kata_pid: libc::pid_t,
     pub record_input: bool,
 }
 
@@ -84,6 +89,16 @@ fn drain_pty(
             }
         }
     }
+}
+
+/// Non-blocking waitpid for the katagrapho writer. Returns true if it exited.
+fn kata_exited(kata_pid: libc::pid_t) -> bool {
+    if kata_pid <= 0 {
+        return false;
+    }
+    let mut status: libc::c_int = 0;
+    let ret = unsafe { libc::waitpid(kata_pid, &mut status, libc::WNOHANG) };
+    ret == kata_pid
 }
 
 /// Try to reap the shell process. Returns None if not yet exited.
@@ -176,6 +191,14 @@ pub fn run(
                 if let Some(code) = reap_shell(cfg.shell_pid) {
                     shell_exit_code = code;
                     shell_exited = true;
+                }
+                // Also check if the katagrapho writer has died. If it has,
+                // fail the recording immediately — do not wait for the
+                // buffer to fill.
+                if !recording_failed && kata_exited(cfg.kata_pid) {
+                    recording_failed = true;
+                    failure_reason =
+                        Some("katagrapho writer exited unexpectedly".to_string());
                 }
             }
 

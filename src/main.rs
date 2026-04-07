@@ -316,6 +316,7 @@ fn run() -> Result<(), EpitroposError> {
         pty_master: pty.master,
         signal_pipe: signal_state.pipe_read,
         shell_pid,
+        kata_pid,
         record_input: cfg.general.record_input,
     };
     let mut rate_limiter =

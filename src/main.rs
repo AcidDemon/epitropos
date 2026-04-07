@@ -379,7 +379,31 @@ fn resolve_shell(cfg: &config::Config, username: &str) -> String {
     cfg.shell.resolve(username).to_string()
 }
 
+/// Groups hardcoded as always fail-closed. Operators can *extend* the
+/// closed set via `closed_for_groups` but cannot remove these. Ensures
+/// that a `default = "open"` + missing `closed_for_groups` operator
+/// typo cannot let a root-equivalent identity log in unrecorded.
+/// Groups not present on the host are silently ignored.
+pub const ALWAYS_CLOSED_GROUPS: &[&str] = &["root", "wheel", "sudo", "admin"];
+
+/// UIDs hardcoded as always fail-closed.
+pub const ALWAYS_CLOSED_UIDS: &[u32] = &[0];
+
 fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
+    // Hardcoded UID check first (belt and braces — uid 0 should never
+    // reach this code path because verify_suid_context refuses to run
+    // as root, but defense in depth is cheap).
+    let uid = unsafe { libc::getuid() };
+    if ALWAYS_CLOSED_UIDS.contains(&uid) {
+        return FailMode::Closed;
+    }
+    // Hardcoded group check.
+    for group in ALWAYS_CLOSED_GROUPS {
+        if process::user_in_group(username, group) {
+            return FailMode::Closed;
+        }
+    }
+    // Operator-configurable lists.
     for group in &policy.closed_for_groups {
         if process::user_in_group(username, group) {
             return FailMode::Closed;
@@ -391,6 +415,23 @@ fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
         }
     }
     policy.default.clone()
+}
+
+#[cfg(test)]
+mod fail_mode_tests {
+    use super::*;
+
+    #[test]
+    fn hardcoded_group_list_includes_admin_identities() {
+        for grp in ["root", "wheel", "sudo", "admin"] {
+            assert!(ALWAYS_CLOSED_GROUPS.contains(&grp));
+        }
+    }
+
+    #[test]
+    fn always_closed_uids_includes_zero() {
+        assert!(ALWAYS_CLOSED_UIDS.contains(&0));
+    }
 }
 
 fn handle_startup_failure(

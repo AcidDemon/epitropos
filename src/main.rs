@@ -17,6 +17,7 @@ mod utmp;
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 
+use crate::error::EpitroposError;
 use config::FailMode;
 
 // Pre-forked hook runner. Spawned before seccomp so the helper process
@@ -156,20 +157,23 @@ impl Drop for HookRunner {
 }
 
 fn main() {
-    if let Err(msg) = run() {
-        eprintln!("epitropos: {msg}");
-        std::process::exit(1);
+    match run() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("epitropos: {e}");
+            std::process::exit(e.exit_code());
+        }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), EpitroposError> {
     process::sanitize_std_fds();
-    process::verify_suid_context()?;
+    process::verify_suid_context().map_err(EpitroposError::Privilege)?;
     let stashed_env = env::stash_shell_vars();
     env::sanitize();
 
-    let cfg = config::load()?;
-    let user = process::resolve_caller()?;
+    let cfg = config::load().map_err(EpitroposError::Config)?;
+    let user = process::resolve_caller().map_err(EpitroposError::Privilege)?;
 
     // Nesting: flock-based audit session lock.
     let audit_session_id = process::get_audit_session_id();
@@ -205,7 +209,8 @@ fn run() -> Result<(), String> {
         match process::spawn_katagrapho(&cfg.general.katagrapho_path, &session_id, recipient) {
             Ok(v) => v,
             Err(reason) => {
-                return handle_startup_failure(fail_mode, &real_shell, &reason);
+                return handle_startup_failure(fail_mode, &real_shell, &reason)
+                    .map_err(EpitroposError::from);
             }
         };
 
@@ -216,7 +221,8 @@ fn run() -> Result<(), String> {
                 libc::kill(kata_pid, libc::SIGTERM);
                 libc::close(pipe_write);
             }
-            return handle_startup_failure(fail_mode, &real_shell, &reason);
+            return handle_startup_failure(fail_mode, &real_shell, &reason)
+                .map_err(EpitroposError::from);
         }
     };
 

@@ -158,6 +158,16 @@ impl Drop for HookRunner {
 }
 
 fn main() {
+    for arg in std::env::args().skip(1) {
+        if arg == "--version" || arg == "-V" {
+            println!(
+                "epitropos {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("EPITROPOS_GIT_COMMIT")
+            );
+            std::process::exit(0);
+        }
+    }
     match run() {
         Ok(()) => {}
         Err(e) => {

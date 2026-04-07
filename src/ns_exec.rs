@@ -72,6 +72,16 @@ fn drop_all_caps() {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    for arg in args.iter().skip(1) {
+        if arg == "--version" || arg == "-V" {
+            println!(
+                "epitropos-ns-exec {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("EPITROPOS_GIT_COMMIT")
+            );
+            std::process::exit(0);
+        }
+    }
     if args.len() < 3 {
         die("usage: epitropos-ns-exec <shell-path> <argv0> [args...]");
     }

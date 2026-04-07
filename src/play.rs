@@ -3,6 +3,16 @@ use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    for arg in args.iter().skip(1) {
+        if arg == "--version" || arg == "-V" {
+            println!(
+                "epitropos-play {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("EPITROPOS_GIT_COMMIT")
+            );
+            std::process::exit(0);
+        }
+    }
     let mut speed = 1.0_f64;
     let mut file_path: Option<String> = None;
     let mut follow = false;

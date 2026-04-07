@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn construction_fails_gracefully_on_non_tty() {
         // /dev/null is not a tty: enter_raw must return Err without panicking.
-        let fd = unsafe { libc::open(b"/dev/null\0".as_ptr() as *const _, libc::O_RDONLY) };
+        let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
         assert!(fd >= 0);
         let result = TerminalGuard::enter_raw(fd);
         assert!(result.is_err(), "expected Err on non-tty fd");

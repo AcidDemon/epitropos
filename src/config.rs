@@ -262,7 +262,10 @@ default = "open"
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/bin/katagrapho");
-        assert_eq!(cfg.general.ns_exec_path, "/run/wrappers/bin/epitropos-ns-exec");
+        assert_eq!(
+            cfg.general.ns_exec_path,
+            "/run/wrappers/bin/epitropos-ns-exec"
+        );
         assert!(!cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/sh");

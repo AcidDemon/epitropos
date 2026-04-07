@@ -44,7 +44,10 @@ pub fn try_session_lock(audit_session_id: u32) -> Result<Option<OwnedFd>, String
         )
     };
     if fd < 0 {
-        return Err(format!("session lock open: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "session lock open: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } < 0 {
@@ -161,11 +164,17 @@ pub fn verify_suid_context() -> Result<(), String> {
 
 pub fn harden_proxy() -> Result<(), String> {
     if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
-        return Err(format!("PR_SET_DUMPABLE: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "PR_SET_DUMPABLE: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     // Yama LSM may not be present
     if unsafe { libc::prctl(libc::PR_SET_PTRACER, 0_u64, 0_u64, 0_u64, 0_u64) } != 0 {
-        eprintln!("epitropos: PR_SET_PTRACER: {}", std::io::Error::last_os_error());
+        eprintln!(
+            "epitropos: PR_SET_PTRACER: {}",
+            std::io::Error::last_os_error()
+        );
     }
     Ok(())
 }

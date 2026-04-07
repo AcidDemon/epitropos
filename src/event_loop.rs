@@ -197,8 +197,7 @@ pub fn run(
                 // buffer to fill.
                 if !recording_failed && kata_exited(cfg.kata_pid) {
                     recording_failed = true;
-                    failure_reason =
-                        Some("katagrapho writer exited unexpectedly".to_string());
+                    failure_reason = Some("katagrapho writer exited unexpectedly".to_string());
                 }
             }
 

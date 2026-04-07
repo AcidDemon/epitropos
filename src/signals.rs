@@ -115,6 +115,16 @@ impl SignalState {
     }
 }
 
+impl Drop for SignalState {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.pipe_read);
+            libc::close(self.pipe_write);
+        }
+        SIGNAL_PIPE_WRITE.store(-1, Ordering::Release);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,15 +183,5 @@ mod tests {
             libc::close(fds[0]);
             libc::close(fds[1]);
         }
-    }
-}
-
-impl Drop for SignalState {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.pipe_read);
-            libc::close(self.pipe_write);
-        }
-        SIGNAL_PIPE_WRITE.store(-1, Ordering::Release);
     }
 }

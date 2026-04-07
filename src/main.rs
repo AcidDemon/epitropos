@@ -6,13 +6,13 @@ mod env;
 mod error;
 mod event_loop;
 mod log;
-mod term_guard;
 mod process;
 mod pty;
 mod rate_limit;
 mod seccomp;
 mod session_id;
 mod signals;
+mod term_guard;
 mod utmp;
 
 use std::ffi::CString;
@@ -44,7 +44,10 @@ impl HookRunner {
         let c_hook = match CString::new(hook.as_bytes()) {
             Ok(s) => s,
             Err(_) => {
-                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                unsafe {
+                    libc::close(pipe_read);
+                    libc::close(pipe_write);
+                }
                 return None;
             }
         };
@@ -54,7 +57,10 @@ impl HookRunner {
         let pid = unsafe { libc::fork() };
         match pid {
             -1 => {
-                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                unsafe {
+                    libc::close(pipe_read);
+                    libc::close(pipe_write);
+                }
                 None
             }
             0 => unsafe {
@@ -76,7 +82,11 @@ impl HookRunner {
                 }
 
                 let mut reason_buf = [0u8; 256];
-                let n = libc::read(pipe_read, reason_buf.as_mut_ptr() as *mut libc::c_void, reason_buf.len());
+                let n = libc::read(
+                    pipe_read,
+                    reason_buf.as_mut_ptr() as *mut libc::c_void,
+                    reason_buf.len(),
+                );
                 libc::close(pipe_read);
 
                 if n <= 0 {
@@ -104,7 +114,10 @@ impl HookRunner {
             },
             child_pid => {
                 unsafe { libc::close(pipe_read) };
-                Some(HookRunner { pipe_write, pid: child_pid })
+                Some(HookRunner {
+                    pipe_write,
+                    pid: child_pid,
+                })
             }
         }
     }
@@ -145,7 +158,9 @@ impl Drop for HookRunner {
             let timeout = std::time::Duration::from_secs(5);
             loop {
                 let ret = libc::waitpid(self.pid, &mut status, libc::WNOHANG);
-                if ret != 0 { break; }
+                if ret != 0 {
+                    break;
+                }
                 if start.elapsed() >= timeout {
                     libc::kill(self.pid, libc::SIGKILL);
                     libc::waitpid(self.pid, &mut status, 0);
@@ -296,10 +311,19 @@ fn run() -> Result<(), EpitroposError> {
     let ns_exec = if std::path::Path::new(&cfg.general.ns_exec_path).exists() {
         Some(cfg.general.ns_exec_path.as_str())
     } else {
-        eprintln!("epitropos: ns_exec not found at {}, no PID isolation", cfg.general.ns_exec_path);
+        eprintln!(
+            "epitropos: ns_exec not found at {}, no PID isolation",
+            cfg.general.ns_exec_path
+        );
         None
     };
-    let shell_pid = process::spawn_shell(slave_fd, &real_shell, &shell_env, command.as_deref(), ns_exec)?;
+    let shell_pid = process::spawn_shell(
+        slave_fd,
+        &real_shell,
+        &shell_env,
+        command.as_deref(),
+        ns_exec,
+    )?;
 
     unsafe { libc::close(slave_fd) };
     utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
@@ -365,7 +389,12 @@ fn run() -> Result<(), EpitroposError> {
     utmp::remove_entry(&pty.slave_path, shell_pid);
     // _session_lock OwnedFd drops here, releasing the flock automatically.
 
-    log::session_end(&session_id, &user.username, recorder.elapsed_secs(), result.shell_exit_code);
+    log::session_end(
+        &session_id,
+        &user.username,
+        recorder.elapsed_secs(),
+        result.shell_exit_code,
+    );
     std::process::exit(result.shell_exit_code);
 }
 
@@ -425,23 +454,6 @@ fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
         }
     }
     policy.default.clone()
-}
-
-#[cfg(test)]
-mod fail_mode_tests {
-    use super::*;
-
-    #[test]
-    fn hardcoded_group_list_includes_admin_identities() {
-        for grp in ["root", "wheel", "sudo", "admin"] {
-            assert!(ALWAYS_CLOSED_GROUPS.contains(&grp));
-        }
-    }
-
-    #[test]
-    fn always_closed_uids_includes_zero() {
-        assert!(ALWAYS_CLOSED_UIDS.contains(&0));
-    }
 }
 
 fn handle_startup_failure(
@@ -519,3 +531,19 @@ fn detect_command() -> Option<String> {
     std::env::var("SSH_ORIGINAL_COMMAND").ok()
 }
 
+#[cfg(test)]
+mod fail_mode_tests {
+    use super::*;
+
+    #[test]
+    fn hardcoded_group_list_includes_admin_identities() {
+        for grp in ["root", "wheel", "sudo", "admin"] {
+            assert!(ALWAYS_CLOSED_GROUPS.contains(&grp));
+        }
+    }
+
+    #[test]
+    fn always_closed_uids_includes_zero() {
+        assert!(ALWAYS_CLOSED_UIDS.contains(&0));
+    }
+}

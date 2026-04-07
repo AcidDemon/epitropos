@@ -82,7 +82,9 @@ impl Write for FlushBuffer {
             self.flush().map_err(std::io::Error::other)?;
             if self.buf.len() >= self.max_size {
                 self.broken = true;
-                return Err(std::io::Error::other("buffer overflow: katagrapho pipe stalled"));
+                return Err(std::io::Error::other(
+                    "buffer overflow: katagrapho pipe stalled",
+                ));
             }
         } else if self.buf.len() >= self.capacity {
             self.flush().map_err(std::io::Error::other)?;

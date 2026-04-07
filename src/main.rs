@@ -3,6 +3,7 @@ mod backend;
 mod buffer;
 mod config;
 mod env;
+mod error;
 mod event_loop;
 mod log;
 mod process;

@@ -83,9 +83,14 @@ fn drain_pty(
             break;
         }
         if !*recording_failed {
-            if let Err(e) = recorder.write_output(writer, data) {
-                *recording_failed = true;
-                *failure_reason = Some(e);
+            match recorder.write_output(writer, data) {
+                Ok(_) => {
+                    let _ = recorder.maybe_flush_chunk(writer);
+                }
+                Err(e) => {
+                    *recording_failed = true;
+                    *failure_reason = Some(e);
+                }
             }
         }
     }
@@ -177,12 +182,17 @@ pub fn run(
                 if let Ok((cols, rows)) = crate::pty::get_terminal_size(cfg.user_stdin) {
                     let _ = crate::pty::set_terminal_size(cfg.pty_master, cols, rows);
                     if !recording_failed {
-                        if let Err(e) = recorder.write_resize(writer, cols, rows) {
-                            recording_failed = true;
-                            failure_reason = Some(e);
-                            break 'event_loop;
+                        match recorder.write_resize(writer, cols, rows) {
+                            Ok(bytes) => {
+                                let _ = recorder.write_raw(extra, &bytes);
+                                let _ = recorder.maybe_flush_chunk(writer);
+                            }
+                            Err(e) => {
+                                recording_failed = true;
+                                failure_reason = Some(e);
+                                break 'event_loop;
+                            }
                         }
-                        let _ = recorder.write_resize(extra, cols, rows);
                     }
                 }
             }
@@ -254,15 +264,23 @@ pub fn run(
             }
             if !recording_failed {
                 if rate_limiter.check(data.len()) {
-                    if let Err(e) = recorder.write_output(writer, data) {
-                        recording_failed = true;
-                        failure_reason = Some(e);
-                        break 'event_loop;
+                    match recorder.write_output(writer, data) {
+                        Ok(bytes) => {
+                            let _ = recorder.write_raw(extra, &bytes);
+                            let _ = recorder.maybe_flush_chunk(writer);
+                        }
+                        Err(e) => {
+                            recording_failed = true;
+                            failure_reason = Some(e);
+                            break 'event_loop;
+                        }
                     }
-                    let _ = recorder.write_output(extra, data);
                 } else {
-                    let _ = recorder
-                        .write_output(writer, b"[epitropos: output suppressed by rate limit]\r\n");
+                    if let Ok(_) = recorder
+                        .write_output(writer, b"[epitropos: output suppressed by rate limit]\r\n")
+                    {
+                        let _ = recorder.maybe_flush_chunk(writer);
+                    }
                 }
             }
         }
@@ -291,12 +309,17 @@ pub fn run(
             let data = &buf[..n as usize];
             let _ = write_all_fd(cfg.pty_master, data);
             if cfg.record_input && !recording_failed && rate_limiter.check(data.len()) {
-                if let Err(e) = recorder.write_input(writer, data) {
-                    recording_failed = true;
-                    failure_reason = Some(e);
-                    break 'event_loop;
+                match recorder.write_input(writer, data) {
+                    Ok(bytes) => {
+                        let _ = recorder.write_raw(extra, &bytes);
+                        let _ = recorder.maybe_flush_chunk(writer);
+                    }
+                    Err(e) => {
+                        recording_failed = true;
+                        failure_reason = Some(e);
+                        break 'event_loop;
+                    }
                 }
-                let _ = recorder.write_input(extra, data);
             }
         }
 

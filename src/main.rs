@@ -382,6 +382,9 @@ fn run() -> Result<(), EpitroposError> {
         &mut extra,
     );
 
+    // Commit any trailing records that hadn't yet crossed a chunk boundary.
+    let _ = recorder.force_flush_chunk(&mut write_buf);
+
     // _term_guard drops here, restoring the terminal if it was captured.
 
     unsafe { libc::close(pipe_write) };

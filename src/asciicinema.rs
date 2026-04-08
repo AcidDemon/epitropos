@@ -99,31 +99,40 @@ impl Recorder {
         Ok(bytes)
     }
 
-    pub fn write_output(&self, w: &mut dyn Write, data: &[u8]) -> Result<(), String> {
+    /// Write an `out` record to `w` and return the serialized bytes so
+    /// the caller can mirror them to side-channel writers via `write_raw`.
+    /// The ChunkTracker is updated exactly once.
+    pub fn write_output(&self, w: &mut dyn Write, data: &[u8]) -> Result<Vec<u8>, String> {
         let t = self.elapsed_secs();
         let mut bytes = Vec::with_capacity(data.len() + 64);
         kgv1::write_out(&mut bytes, t, data).map_err(|e| format!("serialize out: {e}"))?;
         w.write_all(&bytes).map_err(|e| format!("write out: {e}"))?;
         self.chunks.borrow_mut().record(&bytes);
-        Ok(())
+        Ok(bytes)
     }
 
-    pub fn write_input(&self, w: &mut dyn Write, data: &[u8]) -> Result<(), String> {
+    pub fn write_input(&self, w: &mut dyn Write, data: &[u8]) -> Result<Vec<u8>, String> {
         let t = self.elapsed_secs();
         let mut bytes = Vec::with_capacity(data.len() + 64);
         kgv1::write_in(&mut bytes, t, data).map_err(|e| format!("serialize in: {e}"))?;
         w.write_all(&bytes).map_err(|e| format!("write in: {e}"))?;
         self.chunks.borrow_mut().record(&bytes);
-        Ok(())
+        Ok(bytes)
     }
 
-    pub fn write_resize(&self, w: &mut dyn Write, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn write_resize(
+        &self,
+        w: &mut dyn Write,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Vec<u8>, String> {
         let t = self.elapsed_secs();
         let mut bytes = Vec::with_capacity(64);
-        kgv1::write_resize(&mut bytes, t, cols, rows).map_err(|e| format!("serialize resize: {e}"))?;
+        kgv1::write_resize(&mut bytes, t, cols, rows)
+            .map_err(|e| format!("serialize resize: {e}"))?;
         w.write_all(&bytes).map_err(|e| format!("write resize: {e}"))?;
         self.chunks.borrow_mut().record(&bytes);
-        Ok(())
+        Ok(bytes)
     }
 
     /// Mirror already-serialized bytes to a side-channel writer. Does

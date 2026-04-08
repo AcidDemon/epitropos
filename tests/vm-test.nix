@@ -59,17 +59,34 @@ pkgs.testers.nixosTest {
     server.succeed("cp /tmp/test-key.pub /home/testuser/.ssh/authorized_keys")
     server.succeed("chown -R testuser:users /home/testuser/.ssh")
 
+    # Track B: verify signing key was generated at boot
+    server.succeed("test -f /var/lib/katagrapho/signing.key")
+    server.succeed("test -f /var/lib/katagrapho/signing.pub")
+    server.succeed("[ $(stat -c '%a' /var/lib/katagrapho/signing.key) = '400' ]")
+    server.succeed("[ $(stat -c '%a' /var/lib/katagrapho/signing.pub) = '444' ]")
+
     # Run a recorded session
     server.succeed("${ssh} 'echo encrypted-test-data'")
 
-    # Verify encrypted recording exists (.cast.age)
+    # Verify encrypted recording exists
     server.succeed("ls /var/log/ssh-sessions/testuser/*.cast.age")
 
-    # Verify we can decrypt it
+    # Track B: verify signed manifest sidecar was written
+    server.succeed("ls /var/log/ssh-sessions/testuser/*.cast.age.manifest.json")
+
+    # Track B: head.hash was advanced and log has a line
+    server.succeed("test -s /var/lib/katagrapho/head.hash")
+    server.succeed("grep -q testuser /var/lib/katagrapho/head.hash.log")
+
+    # Verify we can decrypt the recording
     server.succeed("age -d -i /etc/age/key.txt /var/log/ssh-sessions/testuser/*.cast.age > /tmp/decrypted.cast")
 
-    # Verify decrypted content
+    # Verify decrypted content is kgv1 format
     server.succeed("grep -q 'encrypted-test-data' /tmp/decrypted.cast")
-    server.succeed("head -1 /tmp/decrypted.cast | grep -q '\"version\":2'")
+    server.succeed("head -1 /tmp/decrypted.cast | grep -q '\"kind\":\"header\"'")
+    server.succeed("head -1 /tmp/decrypted.cast | grep -q '\"v\":\"katagrapho-v1\"'")
+
+    # Verify katagrapho-verify validates the sidecar signature
+    server.succeed("katagrapho-verify /var/log/ssh-sessions/testuser/*.manifest.json")
   '';
 }

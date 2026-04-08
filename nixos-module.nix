@@ -44,6 +44,11 @@ let
     hooks = {
       on_recording_failure = if cfg.onRecordingFailure != null then cfg.onRecordingFailure else "";
     };
+    chunk = {
+      max_bytes = cfg.chunk.maxBytes;
+      max_messages = cfg.chunk.maxMessages;
+      max_seconds = cfg.chunk.maxSeconds;
+    };
   };
 in
 {
@@ -154,6 +159,24 @@ in
       type = types.nullOr types.path;
       default = null;
       description = "Optional path to a script/binary invoked when a recording fails.";
+    };
+
+    chunk = {
+      maxBytes = mkOption {
+        type = types.int;
+        default = 65536;
+        description = "Max bytes per chunk before forcing a boundary.";
+      };
+      maxMessages = mkOption {
+        type = types.int;
+        default = 256;
+        description = "Max messages per chunk before forcing a boundary.";
+      };
+      maxSeconds = mkOption {
+        type = types.float;
+        default = 10.0;
+        description = "Max elapsed seconds per chunk before forcing a boundary.";
+      };
     };
   };
 

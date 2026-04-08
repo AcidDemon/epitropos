@@ -1,4 +1,5 @@
 mod asciicinema;
+mod auth_meta;
 mod backend;
 mod buffer;
 mod config;

@@ -275,12 +275,11 @@ pub fn run(
                             break 'event_loop;
                         }
                     }
-                } else {
-                    if let Ok(_) = recorder
-                        .write_output(writer, b"[epitropos: output suppressed by rate limit]\r\n")
-                    {
-                        let _ = recorder.maybe_flush_chunk(writer);
-                    }
+                } else if recorder
+                    .write_output(writer, b"[epitropos: output suppressed by rate limit]\r\n")
+                    .is_ok()
+                {
+                    let _ = recorder.maybe_flush_chunk(writer);
                 }
             }
         }

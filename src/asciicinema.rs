@@ -94,7 +94,8 @@ impl Recorder {
         };
         let mut bytes = Vec::with_capacity(512);
         kgv1::write_header(&mut bytes, &h).map_err(|e| format!("serialize header: {e}"))?;
-        w.write_all(&bytes).map_err(|e| format!("write header: {e}"))?;
+        w.write_all(&bytes)
+            .map_err(|e| format!("write header: {e}"))?;
         self.chunks.borrow_mut().record(&bytes);
         Ok(bytes)
     }
@@ -120,17 +121,13 @@ impl Recorder {
         Ok(bytes)
     }
 
-    pub fn write_resize(
-        &self,
-        w: &mut dyn Write,
-        cols: u16,
-        rows: u16,
-    ) -> Result<Vec<u8>, String> {
+    pub fn write_resize(&self, w: &mut dyn Write, cols: u16, rows: u16) -> Result<Vec<u8>, String> {
         let t = self.elapsed_secs();
         let mut bytes = Vec::with_capacity(64);
         kgv1::write_resize(&mut bytes, t, cols, rows)
             .map_err(|e| format!("serialize resize: {e}"))?;
-        w.write_all(&bytes).map_err(|e| format!("write resize: {e}"))?;
+        w.write_all(&bytes)
+            .map_err(|e| format!("write resize: {e}"))?;
         self.chunks.borrow_mut().record(&bytes);
         Ok(bytes)
     }
@@ -174,7 +171,8 @@ impl Recorder {
             &summary.sha256_hex,
         )
         .map_err(|e| format!("serialize chunk: {e}"))?;
-        w.write_all(&bytes).map_err(|e| format!("write chunk: {e}"))?;
+        w.write_all(&bytes)
+            .map_err(|e| format!("write chunk: {e}"))?;
         // Chunk records are NOT recorded into the tracker.
         self.chunks.borrow_mut().reset();
         Ok(())
@@ -225,7 +223,8 @@ mod tests {
     fn header_is_kgv1_format() {
         let r = Recorder::new(test_meta(), test_cfg());
         let mut buf = Vec::new();
-        r.write_header(&mut buf, 80, 24, "/bin/bash", "xterm").unwrap();
+        r.write_header(&mut buf, 80, 24, "/bin/bash", "xterm")
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         let v: Value = serde_json::from_str(s.trim()).unwrap();
         assert_eq!(v["kind"], "header");
@@ -262,7 +261,8 @@ mod tests {
     fn force_flush_emits_trailing_chunk() {
         let r = Recorder::new(test_meta(), test_cfg());
         let mut buf = Vec::new();
-        r.write_header(&mut buf, 80, 24, "/bin/sh", "xterm").unwrap();
+        r.write_header(&mut buf, 80, 24, "/bin/sh", "xterm")
+            .unwrap();
         r.write_output(&mut buf, b"hi").unwrap();
         r.force_flush_chunk(&mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -278,7 +278,8 @@ mod tests {
         cfg.max_messages = 2;
         let r = Recorder::new(test_meta(), cfg);
         let mut buf = Vec::new();
-        r.write_header(&mut buf, 80, 24, "/bin/sh", "xterm").unwrap();
+        r.write_header(&mut buf, 80, 24, "/bin/sh", "xterm")
+            .unwrap();
         r.maybe_flush_chunk(&mut buf).unwrap();
         // Only 1 record so far → no chunk.
         assert!(!String::from_utf8_lossy(&buf).contains("\"kind\":\"chunk\""));

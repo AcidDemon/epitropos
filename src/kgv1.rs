@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn write_chunk_round_trips() {
         let mut buf = Vec::new();
-        write_chunk(&mut buf, 7, 1024, 42, 3.14, "deadbeef").unwrap();
+        write_chunk(&mut buf, 7, 1024, 42, 3.5, "deadbeef").unwrap();
         let v: Value = serde_json::from_str(std::str::from_utf8(&buf).unwrap().trim()).unwrap();
         assert_eq!(v["kind"], "chunk");
         assert_eq!(v["seq"], 7);

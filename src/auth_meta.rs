@@ -12,8 +12,8 @@ pub struct AuthMeta {
     pub ppid: i32,
     pub parent_comm: Option<String>,
     pub parent_cmdline: Option<String>,
-    pub pam_rhost: Option<String>,    // reserved for Track D
-    pub pam_service: Option<String>,  // reserved for Track D
+    pub pam_rhost: Option<String>,   // reserved for Track D
+    pub pam_service: Option<String>, // reserved for Track D
 }
 
 impl AuthMeta {

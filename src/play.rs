@@ -118,7 +118,8 @@ fn verify_sidecar(path: &str, force: bool) {
 }
 
 fn detect_format(first_line: &str) -> Format {
-    if first_line.contains("\"kind\":\"header\"") && first_line.contains("\"v\":\"katagrapho-v1\"") {
+    if first_line.contains("\"kind\":\"header\"") && first_line.contains("\"v\":\"katagrapho-v1\"")
+    {
         Format::Kgv1
     } else if first_line.contains("\"version\":2") || first_line.contains("\"version\": 2") {
         Format::AsciicastV2
@@ -205,11 +206,11 @@ fn play_kgv1(mut file: std::fs::File, speed: f64, follow: bool) -> Result<(), St
                         std::thread::sleep(Duration::from_secs_f64(delay));
                     }
                     prev_time = t;
-                    if let Some(b64) = v["b"].as_str() {
-                        if let Ok(bytes) = base64_decode(b64) {
-                            let _ = out.write_all(&bytes);
-                            let _ = out.flush();
-                        }
+                    if let Some(b64) = v["b"].as_str()
+                        && let Ok(bytes) = base64_decode(b64)
+                    {
+                        let _ = out.write_all(&bytes);
+                        let _ = out.flush();
                     }
                 }
                 "chunk" | "resize" | "in" | "end" | "rotate" | "header" => {
@@ -324,7 +325,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
         }
     }
     let bytes = input.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 length not multiple of 4".to_string());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

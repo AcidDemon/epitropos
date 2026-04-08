@@ -6,6 +6,7 @@ mod config;
 mod env;
 mod error;
 mod event_loop;
+mod kgv1;
 mod log;
 mod process;
 mod pty;

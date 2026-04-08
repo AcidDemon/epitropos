@@ -198,6 +198,8 @@ fn run() -> Result<(), EpitroposError> {
     process::sanitize_std_fds();
     process::verify_suid_context().map_err(EpitroposError::Privilege)?;
     let stashed_env = env::stash_shell_vars();
+    // Capture SSH/PAM env vars BEFORE env::sanitize wipes them.
+    let auth_meta_captured = auth_meta::AuthMeta::capture();
     env::sanitize();
 
     let cfg = config::load().map_err(EpitroposError::Config)?;
@@ -269,18 +271,25 @@ fn run() -> Result<(), EpitroposError> {
         boot_id: asciicinema::get_boot_id(),
         audit_session_id,
         recording_id: session_id.clone(),
+        user: user.username.clone(),
+        auth: auth_meta_captured.clone(),
     };
 
-    let recorder = asciicinema::Recorder::new();
+    let recorder = asciicinema::Recorder::new(meta, cfg.chunk.clone());
     let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
 
     // Write header to pipe. Use dup to avoid ownership issues.
-    let header_fd = unsafe { libc::dup(pipe_write) };
-    if header_fd >= 0 {
-        let mut file = unsafe { std::fs::File::from_raw_fd(header_fd) };
-        let _ = recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta);
-        // file drops here, closing header_fd (which is the dup, not pipe_write)
-    }
+    let header_bytes = {
+        let header_fd = unsafe { libc::dup(pipe_write) };
+        if header_fd >= 0 {
+            let mut file = unsafe { std::fs::File::from_raw_fd(header_fd) };
+            recorder
+                .write_header(&mut file, cols, rows, &real_shell, &term)
+                .ok()
+        } else {
+            None
+        }
+    };
 
     let mut extra_writers: Vec<Box<dyn std::io::Write>> = Vec::new();
     for wc in &cfg.writers {
@@ -303,7 +312,9 @@ fn run() -> Result<(), EpitroposError> {
         extra_writers.push(w);
     }
     let mut extra = backend::MultiWriter::new(extra_writers);
-    let _ = recorder.write_header(&mut extra, cols, rows, &real_shell, &term, &meta);
+    if let Some(ref bytes) = header_bytes {
+        let _ = recorder.write_raw(&mut extra, bytes);
+    }
 
     let slave_fd = pty.open_slave()?;
     let signal_state = signals::SignalState::setup()?;

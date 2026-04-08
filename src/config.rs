@@ -15,6 +15,41 @@ pub struct Config {
     pub notice: Notice,
     #[serde(default)]
     pub hooks: Hooks,
+    #[serde(default)]
+    pub chunk: Chunk,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Chunk {
+    #[serde(default = "Chunk::default_max_bytes")]
+    pub max_bytes: usize,
+    #[serde(default = "Chunk::default_max_messages")]
+    pub max_messages: u64,
+    #[serde(default = "Chunk::default_max_seconds")]
+    pub max_seconds: f64,
+}
+
+impl Chunk {
+    fn default_max_bytes() -> usize {
+        65536
+    }
+    fn default_max_messages() -> u64 {
+        256
+    }
+    fn default_max_seconds() -> f64 {
+        10.0
+    }
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self {
+            max_bytes: Self::default_max_bytes(),
+            max_messages: Self::default_max_messages(),
+            max_seconds: Self::default_max_seconds(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

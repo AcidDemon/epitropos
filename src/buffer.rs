@@ -97,6 +97,140 @@ impl Write for FlushBuffer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ChunkTracker: decides chunk boundaries and computes a streaming SHA-256 over
+// the records in the current chunk. Used by kgv1_writer to emit `chunk`
+// records at flush boundaries.
+// ---------------------------------------------------------------------------
+
+use sha2::{Digest, Sha256};
+
+use crate::config::Chunk as ChunkCfg;
+
+pub struct ChunkTracker {
+    cfg: ChunkCfg,
+    seq: u64,
+    bytes: u64,
+    messages: u64,
+    chunk_start: Instant,
+    hasher: Sha256,
+}
+
+pub struct ChunkSummary {
+    pub seq: u64,
+    pub bytes: u64,
+    pub messages: u64,
+    pub elapsed: f64,
+    pub sha256_hex: String,
+}
+
+impl ChunkTracker {
+    pub fn new(cfg: ChunkCfg) -> Self {
+        Self {
+            cfg,
+            seq: 0,
+            bytes: 0,
+            messages: 0,
+            chunk_start: Instant::now(),
+            hasher: Sha256::new(),
+        }
+    }
+
+    /// Feed a serialized record (JSON line + trailing \n).
+    pub fn record(&mut self, record_bytes: &[u8]) {
+        self.bytes += record_bytes.len() as u64;
+        self.messages += 1;
+        self.hasher.update(record_bytes);
+    }
+
+    pub fn should_flush(&self) -> bool {
+        if self.bytes >= self.cfg.max_bytes as u64 {
+            return true;
+        }
+        if self.messages >= self.cfg.max_messages {
+            return true;
+        }
+        if self.chunk_start.elapsed().as_secs_f64() >= self.cfg.max_seconds {
+            return true;
+        }
+        false
+    }
+
+    pub fn finalize(&mut self) -> ChunkSummary {
+        let digest = std::mem::take(&mut self.hasher).finalize();
+        ChunkSummary {
+            seq: self.seq,
+            bytes: self.bytes,
+            messages: self.messages,
+            elapsed: self.chunk_start.elapsed().as_secs_f64(),
+            sha256_hex: hex::encode(digest),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.seq += 1;
+        self.bytes = 0;
+        self.messages = 0;
+        self.chunk_start = Instant::now();
+        self.hasher = Sha256::new();
+    }
+
+    pub fn message_count(&self) -> u64 {
+        self.messages
+    }
+}
+
+#[cfg(test)]
+mod chunk_tracker_tests {
+    use super::*;
+
+    fn cfg(max_bytes: usize, max_messages: u64, max_seconds: f64) -> ChunkCfg {
+        ChunkCfg {
+            max_bytes,
+            max_messages,
+            max_seconds,
+        }
+    }
+
+    #[test]
+    fn flush_fires_on_message_count() {
+        let mut t = ChunkTracker::new(cfg(usize::MAX, 3, f64::MAX));
+        t.record(b"a\n");
+        t.record(b"b\n");
+        assert!(!t.should_flush());
+        t.record(b"c\n");
+        assert!(t.should_flush());
+    }
+
+    #[test]
+    fn flush_fires_on_byte_count() {
+        let mut t = ChunkTracker::new(cfg(10, u64::MAX, f64::MAX));
+        t.record(b"hello\n");
+        assert!(!t.should_flush());
+        t.record(b"world\n");
+        assert!(t.should_flush());
+    }
+
+    #[test]
+    fn finalize_returns_running_hash_and_resets() {
+        let mut t = ChunkTracker::new(cfg(usize::MAX, u64::MAX, f64::MAX));
+        t.record(b"abc\n");
+        let s1 = t.finalize();
+        assert_eq!(s1.seq, 0);
+        assert_eq!(s1.bytes, 4);
+        assert_eq!(s1.messages, 1);
+        let mut h = Sha256::new();
+        h.update(b"abc\n");
+        assert_eq!(s1.sha256_hex, hex::encode(h.finalize()));
+
+        t.reset();
+        assert_eq!(t.message_count(), 0);
+        t.record(b"def\n");
+        let s2 = t.finalize();
+        assert_eq!(s2.seq, 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

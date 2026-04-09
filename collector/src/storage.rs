@@ -103,6 +103,11 @@ pub fn put_atomic(path: &Path, data: &[u8]) -> Result<(), CollectorError> {
     f.sync_all()
         .map_err(|e| CollectorError::Storage(format!("fsync: {e}")))?;
     drop(f);
+    // Force mode AFTER open: OpenOptions::mode is subject to the caller's
+    // umask, which can strip group bits. Collector runs as its own user
+    // and needs deterministic modes regardless of the invoking umask.
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o640))
+        .map_err(|e| CollectorError::Storage(format!("chmod: {e}")))?;
     fs::rename(&tmp, path)
         .map_err(|e| CollectorError::Storage(format!("rename: {e}")))?;
     Ok(())

@@ -21,14 +21,28 @@ fn die(msg: &str) -> ! {
 
 fn has_cap_sys_admin() -> bool {
     #[repr(C)]
-    struct CapHeader { version: u32, pid: i32 }
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
     #[repr(C)]
     #[derive(Copy, Clone)]
-    struct CapData { effective: u32, permitted: u32, inheritable: u32 }
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
 
     unsafe {
-        let mut header = CapHeader { version: 0x20080522, pid: 0 };
-        let mut data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
+        let mut header = CapHeader {
+            version: 0x20080522,
+            pid: 0,
+        };
+        let mut data = [CapData {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
         if libc::syscall(libc::SYS_capget, &mut header as *mut _, data.as_mut_ptr()) != 0 {
             return false;
         }
@@ -55,7 +69,11 @@ fn drop_all_caps() {
         version: 0x20080522, // _LINUX_CAPABILITY_VERSION_3
         pid: 0,
     };
-    let data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
+    let data = [CapData {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
 
     if unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) } != 0 {
         die(&format!("capset: {}", std::io::Error::last_os_error()));
@@ -66,12 +84,25 @@ fn drop_all_caps() {
     }
 
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        die(&format!("PR_SET_NO_NEW_PRIVS: {}", std::io::Error::last_os_error()));
+        die(&format!(
+            "PR_SET_NO_NEW_PRIVS: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    for arg in args.iter().skip(1) {
+        if arg == "--version" || arg == "-V" {
+            println!(
+                "epitropos-ns-exec {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("EPITROPOS_GIT_COMMIT")
+            );
+            std::process::exit(0);
+        }
+    }
     if args.len() < 3 {
         die("usage: epitropos-ns-exec <shell-path> <argv0> [args...]");
     }
@@ -117,8 +148,11 @@ fn main() {
 
             let c_shell = CString::new(shell_path.as_bytes())
                 .unwrap_or_else(|_| die("null byte in shell path"));
-            let argv_ptrs: Vec<*const libc::c_char> =
-                argv.iter().map(|a| a.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
+            let argv_ptrs: Vec<*const libc::c_char> = argv
+                .iter()
+                .map(|a| a.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect();
 
             unsafe { libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr()) };
             die(&format!("execv: {}", std::io::Error::last_os_error()));

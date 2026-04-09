@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub general: General,
     pub shell: Shell,
@@ -14,6 +15,41 @@ pub struct Config {
     pub notice: Notice,
     #[serde(default)]
     pub hooks: Hooks,
+    #[serde(default)]
+    pub chunk: Chunk,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Chunk {
+    #[serde(default = "Chunk::default_max_bytes")]
+    pub max_bytes: usize,
+    #[serde(default = "Chunk::default_max_messages")]
+    pub max_messages: u64,
+    #[serde(default = "Chunk::default_max_seconds")]
+    pub max_seconds: f64,
+}
+
+impl Chunk {
+    fn default_max_bytes() -> usize {
+        65536
+    }
+    fn default_max_messages() -> u64 {
+        256
+    }
+    fn default_max_seconds() -> f64 {
+        10.0
+    }
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self {
+            max_bytes: Self::default_max_bytes(),
+            max_messages: Self::default_max_messages(),
+            max_seconds: Self::default_max_seconds(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +78,7 @@ impl WriterConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimit {
     #[serde(default = "RateLimit::default_rate")]
     pub rate: u64,
@@ -79,6 +116,7 @@ pub enum RateLimitAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Notice {
     #[serde(default = "Notice::default_text")]
     pub text: String,
@@ -102,6 +140,7 @@ impl Default for Notice {
 /// epitropos replaces the user's login shell, so it needs to know
 /// which shell to actually spawn.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Shell {
     /// Default shell for all recorded users.
     pub default: String,
@@ -121,6 +160,7 @@ impl Shell {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct General {
     pub katagrapho_path: String,
     #[serde(default = "General::default_ns_exec_path")]
@@ -137,6 +177,7 @@ impl General {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Encryption {
     #[serde(default)]
     pub recipient_file: String,
@@ -145,6 +186,7 @@ pub struct Encryption {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailPolicy {
     pub default: FailMode,
     #[serde(default)]
@@ -161,6 +203,7 @@ pub enum FailMode {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hooks {
     #[serde(default)]
     pub on_recording_failure: String,
@@ -188,8 +231,6 @@ mod tests {
 [general]
 katagrapho_path = "/usr/local/bin/katagrapho"
 ns_exec_path = "/usr/local/bin/epitropos-ns-exec"
-session_proxy_user = "session-proxy"
-session_proxy_group = "session-proxy"
 record_input = true
 
 [shell]
@@ -242,8 +283,6 @@ on_recording_failure = "/usr/local/bin/notify-failure"
         let toml = r#"
 [general]
 katagrapho_path = "/usr/bin/katagrapho"
-session_proxy_user = "nobody"
-session_proxy_group = "nogroup"
 
 [shell]
 default = "/bin/sh"
@@ -253,14 +292,15 @@ recipient_file = "/etc/epitropos/recipients.txt"
 
 [fail_policy]
 default = "open"
-
-[nesting]
 "#;
 
         let cfg: Config = toml::from_str(toml).expect("should parse minimal config");
 
         assert_eq!(cfg.general.katagrapho_path, "/usr/bin/katagrapho");
-        assert_eq!(cfg.general.ns_exec_path, "/run/wrappers/bin/epitropos-ns-exec");
+        assert_eq!(
+            cfg.general.ns_exec_path,
+            "/run/wrappers/bin/epitropos-ns-exec"
+        );
         assert!(!cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/sh");
@@ -277,5 +317,50 @@ default = "open"
         assert!(cfg.fail_policy.closed_for_groups.is_empty());
 
         assert_eq!(cfg.hooks.on_recording_failure, "");
+    }
+
+    #[test]
+    fn unknown_top_level_section_is_rejected() {
+        let toml_str = r#"
+[general]
+katagrapho_path = "/usr/bin/katagrapho"
+
+[shell]
+default = "/bin/sh"
+
+[encryption]
+
+[fail_policy]
+default = "closed"
+
+[bogusSection]
+something = 1
+"#;
+        let result = toml::from_str::<Config>(toml_str);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("bogusSection") || msg.contains("unknown field"),
+            "expected unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_field_in_failpolicy_is_rejected() {
+        let toml_str = r#"
+[general]
+katagrapho_path = "/usr/bin/katagrapho"
+
+[shell]
+default = "/bin/sh"
+
+[encryption]
+
+[fail_policy]
+default = "closed"
+typoedField = 1
+"#;
+        let result = toml::from_str::<Config>(toml_str);
+        assert!(result.is_err());
     }
 }

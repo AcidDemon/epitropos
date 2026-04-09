@@ -115,7 +115,9 @@ fn allowed_syscalls() -> Vec<u32> {
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn allowed_syscalls() -> Vec<u32> {
-    compile_error!("seccomp syscall table not defined for this architecture — add it or disable seccomp");
+    compile_error!(
+        "seccomp syscall table not defined for this architecture — add it or disable seccomp"
+    );
 }
 
 #[allow(clippy::vec_init_then_push)]
@@ -151,7 +153,10 @@ fn install_bpf(allowed: &[u32]) {
     }
 
     let n = allowed.len();
-    assert!(n <= 254, "seccomp: too many allowed syscalls for BPF u8 jump offsets");
+    assert!(
+        n <= 254,
+        "seccomp: too many allowed syscalls for BPF u8 jump offsets"
+    );
 
     let mut insns: Vec<SockFilter> = Vec::new();
 

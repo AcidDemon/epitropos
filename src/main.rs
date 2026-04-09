@@ -1,9 +1,12 @@
 mod asciicinema;
+mod auth_meta;
 mod backend;
 mod buffer;
 mod config;
 mod env;
+mod error;
 mod event_loop;
+mod kgv1;
 mod log;
 mod process;
 mod pty;
@@ -11,11 +14,13 @@ mod rate_limit;
 mod seccomp;
 mod session_id;
 mod signals;
+mod term_guard;
 mod utmp;
 
 use std::ffi::CString;
 use std::os::unix::io::{FromRawFd, RawFd};
 
+use crate::error::EpitroposError;
 use config::FailMode;
 
 // Pre-forked hook runner. Spawned before seccomp so the helper process
@@ -41,7 +46,10 @@ impl HookRunner {
         let c_hook = match CString::new(hook.as_bytes()) {
             Ok(s) => s,
             Err(_) => {
-                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                unsafe {
+                    libc::close(pipe_read);
+                    libc::close(pipe_write);
+                }
                 return None;
             }
         };
@@ -51,7 +59,10 @@ impl HookRunner {
         let pid = unsafe { libc::fork() };
         match pid {
             -1 => {
-                unsafe { libc::close(pipe_read); libc::close(pipe_write); }
+                unsafe {
+                    libc::close(pipe_read);
+                    libc::close(pipe_write);
+                }
                 None
             }
             0 => unsafe {
@@ -73,7 +84,11 @@ impl HookRunner {
                 }
 
                 let mut reason_buf = [0u8; 256];
-                let n = libc::read(pipe_read, reason_buf.as_mut_ptr() as *mut libc::c_void, reason_buf.len());
+                let n = libc::read(
+                    pipe_read,
+                    reason_buf.as_mut_ptr() as *mut libc::c_void,
+                    reason_buf.len(),
+                );
                 libc::close(pipe_read);
 
                 if n <= 0 {
@@ -101,7 +116,10 @@ impl HookRunner {
             },
             child_pid => {
                 unsafe { libc::close(pipe_read) };
-                Some(HookRunner { pipe_write, pid: child_pid })
+                Some(HookRunner {
+                    pipe_write,
+                    pid: child_pid,
+                })
             }
         }
     }
@@ -142,7 +160,9 @@ impl Drop for HookRunner {
             let timeout = std::time::Duration::from_secs(5);
             loop {
                 let ret = libc::waitpid(self.pid, &mut status, libc::WNOHANG);
-                if ret != 0 { break; }
+                if ret != 0 {
+                    break;
+                }
                 if start.elapsed() >= timeout {
                     libc::kill(self.pid, libc::SIGKILL);
                     libc::waitpid(self.pid, &mut status, 0);
@@ -155,38 +175,56 @@ impl Drop for HookRunner {
 }
 
 fn main() {
-    if let Err(msg) = run() {
-        eprintln!("epitropos: {msg}");
-        std::process::exit(1);
+    for arg in std::env::args().skip(1) {
+        if arg == "--version" || arg == "-V" {
+            println!(
+                "epitropos {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("EPITROPOS_GIT_COMMIT")
+            );
+            std::process::exit(0);
+        }
+    }
+    match run() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("epitropos: {e}");
+            std::process::exit(e.exit_code());
+        }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), EpitroposError> {
     process::sanitize_std_fds();
-    process::verify_suid_context()?;
+    process::verify_suid_context().map_err(EpitroposError::Privilege)?;
     let stashed_env = env::stash_shell_vars();
+    // Capture SSH/PAM env vars BEFORE env::sanitize wipes them.
+    let auth_meta_captured = auth_meta::AuthMeta::capture();
     env::sanitize();
 
-    let cfg = config::load()?;
-    let user = process::resolve_caller()?;
+    let cfg = config::load().map_err(EpitroposError::Config)?;
+    let user = process::resolve_caller().map_err(EpitroposError::Privilege)?;
 
     // Nesting: flock-based audit session lock.
+    // Fail-closed on lock errors: a silent fallback would create an
+    // auditable gap exactly when /var/run/epitropos is unreachable.
     let audit_session_id = process::get_audit_session_id();
-    let _session_lock = match process::is_nested_session(audit_session_id) {
-        Some(guard) => Some(guard),
-        None if audit_session_id.is_some() => {
-            let real_shell = cfg.shell.resolve(&user.username);
-            log::nesting_skip(
-                &audit_session_id.map_or("none".into(), |id| id.to_string()),
-                &user.username,
-                "nested",
-            );
-            process::drop_to_real_user()?;
-            exec_shell_path(real_shell)?;
-            unreachable!();
-        }
-        None => None,
-    };
+    let _session_lock =
+        match process::check_nesting(audit_session_id).map_err(EpitroposError::Nesting)? {
+            process::NestStatus::Outer(fd) => Some(fd),
+            process::NestStatus::NoAuditSession => None,
+            process::NestStatus::Nested => {
+                let real_shell = cfg.shell.resolve(&user.username);
+                log::nesting_skip(
+                    &audit_session_id.map_or("none".into(), |id| id.to_string()),
+                    &user.username,
+                    "nested",
+                );
+                process::drop_to_real_user().map_err(EpitroposError::Privilege)?;
+                exec_shell_path(real_shell).map_err(EpitroposError::from)?;
+                unreachable!();
+            }
+        };
 
     let fail_mode = resolve_fail_mode(&cfg.fail_policy, &user.username);
     let session_id = session_id::generate()?;
@@ -204,7 +242,8 @@ fn run() -> Result<(), String> {
         match process::spawn_katagrapho(&cfg.general.katagrapho_path, &session_id, recipient) {
             Ok(v) => v,
             Err(reason) => {
-                return handle_startup_failure(fail_mode, &real_shell, &reason);
+                return handle_startup_failure(fail_mode, &real_shell, &reason)
+                    .map_err(EpitroposError::from);
             }
         };
 
@@ -215,7 +254,8 @@ fn run() -> Result<(), String> {
                 libc::kill(kata_pid, libc::SIGTERM);
                 libc::close(pipe_write);
             }
-            return handle_startup_failure(fail_mode, &real_shell, &reason);
+            return handle_startup_failure(fail_mode, &real_shell, &reason)
+                .map_err(EpitroposError::from);
         }
     };
 
@@ -231,18 +271,25 @@ fn run() -> Result<(), String> {
         boot_id: asciicinema::get_boot_id(),
         audit_session_id,
         recording_id: session_id.clone(),
+        user: user.username.clone(),
+        auth: auth_meta_captured.clone(),
     };
 
-    let recorder = asciicinema::Recorder::new();
+    let recorder = asciicinema::Recorder::new(meta, cfg.chunk.clone());
     let term = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
 
     // Write header to pipe. Use dup to avoid ownership issues.
-    let header_fd = unsafe { libc::dup(pipe_write) };
-    if header_fd >= 0 {
-        let mut file = unsafe { std::fs::File::from_raw_fd(header_fd) };
-        let _ = recorder.write_header(&mut file, cols, rows, &real_shell, &term, &meta);
-        // file drops here, closing header_fd (which is the dup, not pipe_write)
-    }
+    let header_bytes = {
+        let header_fd = unsafe { libc::dup(pipe_write) };
+        if header_fd >= 0 {
+            let mut file = unsafe { std::fs::File::from_raw_fd(header_fd) };
+            recorder
+                .write_header(&mut file, cols, rows, &real_shell, &term)
+                .ok()
+        } else {
+            None
+        }
+    };
 
     let mut extra_writers: Vec<Box<dyn std::io::Write>> = Vec::new();
     for wc in &cfg.writers {
@@ -265,7 +312,9 @@ fn run() -> Result<(), String> {
         extra_writers.push(w);
     }
     let mut extra = backend::MultiWriter::new(extra_writers);
-    let _ = recorder.write_header(&mut extra, cols, rows, &real_shell, &term, &meta);
+    if let Some(ref bytes) = header_bytes {
+        let _ = recorder.write_raw(&mut extra, bytes);
+    }
 
     let slave_fd = pty.open_slave()?;
     let signal_state = signals::SignalState::setup()?;
@@ -275,10 +324,19 @@ fn run() -> Result<(), String> {
     let ns_exec = if std::path::Path::new(&cfg.general.ns_exec_path).exists() {
         Some(cfg.general.ns_exec_path.as_str())
     } else {
-        eprintln!("epitropos: ns_exec not found at {}, no PID isolation", cfg.general.ns_exec_path);
+        eprintln!(
+            "epitropos: ns_exec not found at {}, no PID isolation",
+            cfg.general.ns_exec_path
+        );
         None
     };
-    let shell_pid = process::spawn_shell(slave_fd, &real_shell, &shell_env, command.as_deref(), ns_exec)?;
+    let shell_pid = process::spawn_shell(
+        slave_fd,
+        &real_shell,
+        &shell_env,
+        command.as_deref(),
+        ns_exec,
+    )?;
 
     unsafe { libc::close(slave_fd) };
     utmp::add_entry(&user.username, &pty.slave_path, shell_pid);
@@ -292,7 +350,15 @@ fn run() -> Result<(), String> {
     seccomp::install_filter();
 
     let is_tty = unsafe { libc::isatty(0) } == 1;
-    let saved_termios = if is_tty { Some(set_raw_mode(0)?) } else { None };
+    // RAII: terminal is restored on drop, including on panic.
+    let _term_guard = if is_tty {
+        Some(
+            term_guard::TerminalGuard::enter_raw(0)
+                .map_err(|e| EpitroposError::Privilege(format!("tcgetattr/tcsetattr: {e}")))?,
+        )
+    } else {
+        None
+    };
 
     let loop_cfg = event_loop::LoopConfig {
         user_stdin: 0,
@@ -300,6 +366,7 @@ fn run() -> Result<(), String> {
         pty_master: pty.master,
         signal_pipe: signal_state.pipe_read,
         shell_pid,
+        kata_pid,
         record_input: cfg.general.record_input,
     };
     let mut rate_limiter =
@@ -315,9 +382,10 @@ fn run() -> Result<(), String> {
         &mut extra,
     );
 
-    if let Some(ref termios) = saved_termios {
-        restore_terminal(0, termios);
-    }
+    // Commit any trailing records that hadn't yet crossed a chunk boundary.
+    let _ = recorder.force_flush_chunk(&mut write_buf);
+
+    // _term_guard drops here, restoring the terminal if it was captured.
 
     unsafe { libc::close(pipe_write) };
     unsafe {
@@ -337,7 +405,12 @@ fn run() -> Result<(), String> {
     utmp::remove_entry(&pty.slave_path, shell_pid);
     // _session_lock OwnedFd drops here, releasing the flock automatically.
 
-    log::session_end(&session_id, &user.username, recorder.elapsed_secs(), result.shell_exit_code);
+    log::session_end(
+        &session_id,
+        &user.username,
+        recorder.elapsed_secs(),
+        result.shell_exit_code,
+    );
     std::process::exit(result.shell_exit_code);
 }
 
@@ -361,7 +434,31 @@ fn resolve_shell(cfg: &config::Config, username: &str) -> String {
     cfg.shell.resolve(username).to_string()
 }
 
+/// Groups hardcoded as always fail-closed. Operators can *extend* the
+/// closed set via `closed_for_groups` but cannot remove these. Ensures
+/// that a `default = "open"` + missing `closed_for_groups` operator
+/// typo cannot let a root-equivalent identity log in unrecorded.
+/// Groups not present on the host are silently ignored.
+pub const ALWAYS_CLOSED_GROUPS: &[&str] = &["root", "wheel", "sudo", "admin"];
+
+/// UIDs hardcoded as always fail-closed.
+pub const ALWAYS_CLOSED_UIDS: &[u32] = &[0];
+
 fn resolve_fail_mode(policy: &config::FailPolicy, username: &str) -> FailMode {
+    // Hardcoded UID check first (belt and braces — uid 0 should never
+    // reach this code path because verify_suid_context refuses to run
+    // as root, but defense in depth is cheap).
+    let uid = unsafe { libc::getuid() };
+    if ALWAYS_CLOSED_UIDS.contains(&uid) {
+        return FailMode::Closed;
+    }
+    // Hardcoded group check.
+    for group in ALWAYS_CLOSED_GROUPS {
+        if process::user_in_group(username, group) {
+            return FailMode::Closed;
+        }
+    }
+    // Operator-configurable lists.
     for group in &policy.closed_for_groups {
         if process::user_in_group(username, group) {
             return FailMode::Closed;
@@ -450,20 +547,19 @@ fn detect_command() -> Option<String> {
     std::env::var("SSH_ORIGINAL_COMMAND").ok()
 }
 
-fn set_raw_mode(fd: RawFd) -> Result<libc::termios, String> {
-    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } < 0 {
-        return Err(format!("tcgetattr: {}", std::io::Error::last_os_error()));
-    }
-    let mut raw = orig;
-    unsafe { libc::cfmakeraw(&mut raw) };
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } < 0 {
-        return Err(format!("tcsetattr: {}", std::io::Error::last_os_error()));
-    }
-    Ok(orig)
-}
+#[cfg(test)]
+mod fail_mode_tests {
+    use super::*;
 
-fn restore_terminal(fd: RawFd, termios: &libc::termios) {
-    unsafe { libc::tcsetattr(fd, libc::TCSANOW, termios) };
-}
+    #[test]
+    fn hardcoded_group_list_includes_admin_identities() {
+        for grp in ["root", "wheel", "sudo", "admin"] {
+            assert!(ALWAYS_CLOSED_GROUPS.contains(&grp));
+        }
+    }
 
+    #[test]
+    fn always_closed_uids_includes_zero() {
+        assert!(ALWAYS_CLOSED_UIDS.contains(&0));
+    }
+}

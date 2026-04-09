@@ -155,7 +155,7 @@
             strictDeps = true;
           };
 
-          vm-test = import ./tests/vm-test.nix {
+          vm-test = import ./tests/vm-proxy.nix {
             inherit pkgs;
             katagraphoFlake = katagrapho;
             epitroposFlake = self;

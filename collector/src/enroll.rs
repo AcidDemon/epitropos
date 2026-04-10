@@ -250,9 +250,9 @@ mod tests {
     #[test]
     fn generate_and_validate_round_trip() {
         let (_dir, secret, edir) = setup();
-        let gen = generate_token(&secret, "alice", 60).unwrap();
-        write_pending(&edir, &gen.token_hash_hex, "alice", gen.expires_at).unwrap();
-        match validate_token(&secret, &edir, &gen.token).unwrap() {
+        let gt = generate_token(&secret, "alice", 60).unwrap();
+        write_pending(&edir, &gt.token_hash_hex, "alice", gt.expires_at).unwrap();
+        match validate_token(&secret, &edir, &gt.token).unwrap() {
             ValidateResult::Ok { sender_name } => assert_eq!(sender_name, "alice"),
             other => panic!("unexpected {other:?}"),
         }
@@ -261,11 +261,11 @@ mod tests {
     #[test]
     fn burned_token_rejected() {
         let (_dir, secret, edir) = setup();
-        let gen = generate_token(&secret, "alice", 60).unwrap();
-        write_pending(&edir, &gen.token_hash_hex, "alice", gen.expires_at).unwrap();
-        burn(&edir, &gen.token_hash_hex).unwrap();
+        let gt = generate_token(&secret, "alice", 60).unwrap();
+        write_pending(&edir, &gt.token_hash_hex, "alice", gt.expires_at).unwrap();
+        burn(&edir, &gt.token_hash_hex).unwrap();
         assert!(matches!(
-            validate_token(&secret, &edir, &gen.token).unwrap(),
+            validate_token(&secret, &edir, &gt.token).unwrap(),
             ValidateResult::AlreadyBurned
         ));
     }
@@ -284,12 +284,12 @@ mod tests {
         let (dir, _secret, edir) = setup();
         let mut other = vec![0u8; 32];
         other[0] = 0xFF;
-        let gen = generate_token(&other, "alice", 60).unwrap();
-        write_pending(&edir, &gen.token_hash_hex, "alice", gen.expires_at).unwrap();
+        let gt = generate_token(&other, "alice", 60).unwrap();
+        write_pending(&edir, &gt.token_hash_hex, "alice", gt.expires_at).unwrap();
         let secret_path = dir.path().join("enroll.secret");
         let good = load_secret(&secret_path).unwrap();
         assert!(matches!(
-            validate_token(&good, &edir, &gen.token).unwrap(),
+            validate_token(&good, &edir, &gt.token).unwrap(),
             ValidateResult::BadMac
         ));
     }

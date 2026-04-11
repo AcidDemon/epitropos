@@ -6,7 +6,7 @@ license.workspace = true
 description = "Off-host collector for epitropos session recordings"
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "macros"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "macros", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "fs", "macros", "signal"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["limit"] }

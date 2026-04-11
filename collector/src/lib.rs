@@ -3,4 +3,5 @@ pub mod config;
 pub mod enroll;
 pub mod error;
 pub mod storage;
+pub mod tls;
 pub mod verify;

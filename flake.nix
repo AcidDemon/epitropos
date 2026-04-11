@@ -121,6 +121,7 @@
       nixosModules = {
         default = self.nixosModules.epitropos;
         epitropos = import ./nixos-module.nix self;
+        collector = import ./nixos-module-collector.nix self;
       };
 
       checks = forAllSystems (

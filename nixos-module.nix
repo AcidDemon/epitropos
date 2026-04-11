@@ -178,6 +178,27 @@ in
         description = "Max elapsed seconds per chunk before forcing a boundary.";
       };
     };
+
+    forward = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable automatic shipping of recordings to a collector.";
+      };
+
+      collector = mkOption {
+        type = types.str;
+        default = "";
+        example = "nyx.tailnet:8443";
+        description = "Collector address and port.";
+      };
+
+      pushIntervalSeconds = mkOption {
+        type = types.int;
+        default = 300;
+        description = "How often the push timer fires (seconds).";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -231,7 +252,60 @@ in
 
     systemd.tmpfiles.rules = [
       "d /var/run/epitropos 0700 ${cfg.proxyUser} ${cfg.proxyGroup} -"
+    ] ++ lib.optionals cfg.forward.enable [
+      "d /var/lib/epitropos-forward 0750 epitropos-forward epitropos-forward -"
     ];
+
+    # Forward submodule: timer-driven push to the collector.
+    users.users.epitropos-forward = lib.mkIf cfg.forward.enable {
+      isSystemUser = true;
+      group = "epitropos-forward";
+      description = "Epitropos recording shipper";
+      home = "/var/empty";
+      shell = "/run/current-system/sw/bin/nologin";
+      extraGroups = [ "katagrapho-readers" ];
+    };
+
+    users.groups.epitropos-forward = lib.mkIf cfg.forward.enable { };
+
+    systemd.services.epitropos-forward-push = lib.mkIf cfg.forward.enable {
+      description = "Ship session recordings to collector";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${cfg.package}/bin/epitropos-forward push --once";
+        User = "epitropos-forward";
+        Group = "epitropos-forward";
+        ProtectSystem = "strict";
+        ReadWritePaths = [ "/var/lib/epitropos-forward" ];
+        ReadOnlyPaths = [
+          "/var/lib/katagrapho"
+          "/var/log/ssh-sessions"
+        ];
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictNamespaces = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        SystemCallArchitectures = "native";
+        PrivateDevices = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+      };
+    };
+
+    systemd.timers.epitropos-forward-push = lib.mkIf cfg.forward.enable {
+      description = "Timer for recording shipment";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnUnitActiveSec = "${toString cfg.forward.pushIntervalSeconds}s";
+        OnBootSec = "60s";
+        Persistent = true;
+      };
+    };
 
   };
 }

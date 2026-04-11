@@ -40,36 +40,41 @@
 
       rustToolchainFor = pkgs: pkgs.rust-bin.stable.latest.minimal;
 
-      mkEpitropos =
+      mkCraneLib =
         pkgs:
         let
           rustToolchain = rustToolchainFor pkgs;
-          craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          src = craneLib.cleanCargoSource ./.;
+        in
+        (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-          commonArgs = {
-            inherit src;
+      workspaceCommonArgs = pkgs: {
+        src = (mkCraneLib pkgs).cleanCargoSource ./.;
+        strictDeps = true;
+        RUSTFLAGS = builtins.concatStringsSep " " [
+          "-C link-arg=-Wl,-z,relro,-z,now"
+          "-C link-arg=-pie"
+          "-C panic=abort"
+        ];
+      };
+
+      mkEpitropos =
+        pkgs:
+        let
+          craneLib = mkCraneLib pkgs;
+          common = workspaceCommonArgs pkgs // {
             pname = "epitropos";
             version = "0.1.0";
-            strictDeps = true;
-
-            RUSTFLAGS = builtins.concatStringsSep " " [
-              "-C link-arg=-Wl,-z,relro,-z,now"
-              "-C link-arg=-pie"
-              "-C panic=abort"
-            ];
           };
-
           cargoArtifacts = craneLib.buildDepsOnly (
-            commonArgs // { doCheck = false; }
+            common // { doCheck = false; }
           );
         in
         craneLib.buildPackage (
-          commonArgs
+          common
           // {
             inherit cargoArtifacts;
             doCheck = false;
-
+            cargoExtraArgs = "-p epitropos";
             meta = {
               description = "PTY-proxy for tamper-proof session recording via PAM";
               license = pkgs.lib.licenses.mit;
@@ -78,16 +83,45 @@
             };
           }
         );
+
+      mkEpitroposCollector =
+        pkgs:
+        let
+          craneLib = mkCraneLib pkgs;
+          common = workspaceCommonArgs pkgs // {
+            pname = "epitropos-collector";
+            version = "0.1.0";
+          };
+          cargoArtifacts = craneLib.buildDepsOnly (
+            common // { doCheck = false; }
+          );
+        in
+        craneLib.buildPackage (
+          common
+          // {
+            inherit cargoArtifacts;
+            doCheck = false;
+            cargoExtraArgs = "-p epitropos-collector";
+            meta = {
+              description = "Off-host collector for epitropos session recordings";
+              license = pkgs.lib.licenses.mit;
+              platforms = pkgs.lib.platforms.linux;
+              mainProgram = "epitropos-collector";
+            };
+          }
+        );
     in
     {
       packages = forAllSystems (system: rec {
         epitropos = mkEpitropos (pkgsFor system);
+        epitropos-collector = mkEpitroposCollector (pkgsFor system);
         default = epitropos;
       });
 
       nixosModules = {
         default = self.nixosModules.epitropos;
         epitropos = import ./nixos-module.nix self;
+        collector = import ./nixos-module-collector.nix self;
       };
 
       checks = forAllSystems (
@@ -122,7 +156,7 @@
             strictDeps = true;
           };
 
-          vm-test = import ./tests/vm-test.nix {
+          vm-test = import ./tests/vm-proxy.nix {
             inherit pkgs;
             katagraphoFlake = katagrapho;
             epitroposFlake = self;

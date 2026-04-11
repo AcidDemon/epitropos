@@ -2,9 +2,8 @@
 
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::config::Config;
 use crate::error::CollectorError;
 
 pub enum Command {

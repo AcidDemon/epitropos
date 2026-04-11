@@ -11,7 +11,7 @@ const DEFAULT_MAX_UPLOAD_BYTES: u64 = 1 << 30; // 1 GiB
 const DEFAULT_TOKEN_TTL_SECONDS: u64 = 900;
 const DEFAULT_MAX_PENDING_TOKENS: usize = 1000;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct Config {
@@ -141,17 +141,6 @@ impl Default for Log {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            listen: Listen::default(),
-            storage: Storage::default(),
-            enrollment: Enrollment::default(),
-            tls: Tls::default(),
-            log: Log::default(),
-        }
-    }
-}
 
 #[allow(dead_code)]
 impl Config {

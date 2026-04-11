@@ -11,7 +11,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::chain::{self, ChainLock, SenderChain};

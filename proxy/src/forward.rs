@@ -194,7 +194,7 @@ fn write_pem(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
 // Push
 // ---------------------------------------------------------------------------
 
-fn cmd_push(args: &[String]) -> Result<(), String> {
+fn cmd_push(_args: &[String]) -> Result<(), String> {
     let head_log = PathBuf::from(DEFAULT_HEAD_LOG);
     let recording_root = PathBuf::from(DEFAULT_RECORDING_ROOT);
     let last_shipped_path = PathBuf::from(STATE_DIR).join("last_shipped.hash");

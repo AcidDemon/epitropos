@@ -3,7 +3,7 @@ use epitropos_collector::config::Config;
 use epitropos_collector::enroll::{self, EnrollmentDir};
 use epitropos_collector::error::CollectorError;
 use epitropos_collector::server::{self, AppState};
-use epitropos_collector::storage::{self, SenderDirs};
+use epitropos_collector::storage::SenderDirs;
 use epitropos_collector::tls::{self, PinnedCerts};
 use std::path::Path;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ fn main() {
                 std::process::exit(e.exit_code());
             }
         }
-        Command::Verify { path } => {
+        Command::Verify { path: _ } => {
             eprintln!("epitropos-collector verify: not yet implemented in Track C");
             std::process::exit(69);
         }
@@ -125,7 +125,7 @@ fn run_list() -> Result<(), CollectorError> {
     let read = std::fs::read_dir(&senders_dir)
         .map_err(|e| CollectorError::Storage(format!("read senders: {e}")))?;
 
-    println!("{:<25} {:<20} {}", "SENDER", "ENROLLED", "HEAD");
+    println!("{:<25} {:<20} HEAD", "SENDER", "ENROLLED");
     for entry in read {
         let entry = entry.map_err(|e| CollectorError::Storage(format!("entry: {e}")))?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -178,7 +178,7 @@ fn run_revoke(sender_name: &str, force: bool) -> Result<(), CollectorError> {
 #[tokio::main]
 async fn run_serve_async(cfg: Config) -> Result<(), CollectorError> {
     let cert_path = cfg.tls_cert_path();
-    let key_path = cfg.tls_key_path();
+    let _key_path = cfg.tls_key_path();
     let secret = enroll::load_secret(&cfg.enroll_secret_path())?;
     let cert_pem = tls::read_cert_pem(&cert_path)?;
     let cert_der = tls::read_cert_der(&cert_path)?;
@@ -187,15 +187,15 @@ async fn run_serve_async(cfg: Config) -> Result<(), CollectorError> {
     // Load already-enrolled sender certs into the pinned set.
     let pinned = PinnedCerts::new();
     let senders_dir = cfg.storage.dir.join("senders");
-    if senders_dir.exists() {
-        if let Ok(read) = std::fs::read_dir(&senders_dir) {
+    if senders_dir.exists()
+        && let Ok(read) = std::fs::read_dir(&senders_dir)
+    {
             for entry in read.flatten() {
                 let fp_file = entry.path().join("cert.fingerprint");
                 if let Ok(fp_hex) = std::fs::read_to_string(&fp_file) {
                     pinned.add_hex(fp_hex.trim());
                 }
             }
-        }
     }
 
     let state = AppState {

@@ -6,6 +6,7 @@ mod config;
 mod env;
 mod error;
 mod event_loop;
+mod journal;
 mod kgv1;
 mod log;
 mod process;
@@ -230,6 +231,15 @@ fn run() -> Result<(), EpitroposError> {
     let session_id = session_id::generate()?;
     log::session_start(&session_id, &user.username);
 
+    let hostname = asciicinema::get_hostname();
+    journal::session_start(
+        &session_id,
+        &user.username,
+        &hostname,
+        auth_meta_captured.ssh_client.as_deref().unwrap_or(""),
+        audit_session_id,
+    );
+
     // Shell resolution: argv0 symlink > config. Validate against allowlist.
     let real_shell = resolve_shell(&cfg, &user.username);
 
@@ -404,6 +414,17 @@ fn run() -> Result<(), EpitroposError> {
 
     utmp::remove_entry(&pty.slave_path, shell_pid);
     // _session_lock OwnedFd drops here, releasing the flock automatically.
+
+    let end_reason = if result.recording_failed { "recording_failed" } else { "eof" };
+    journal::session_end(
+        &session_id,
+        &user.username,
+        &hostname,
+        recorder.elapsed_secs(),
+        result.shell_exit_code,
+        end_reason,
+        0, // total_bytes not tracked at the proxy level; manifest has the real number
+    );
 
     log::session_end(
         &session_id,

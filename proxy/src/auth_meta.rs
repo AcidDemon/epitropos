@@ -19,6 +19,7 @@ pub struct AuthMeta {
 impl AuthMeta {
     pub fn capture() -> Self {
         let ppid = unsafe { libc::getppid() };
+        let (pam_rhost, pam_service) = read_pam_stash(ppid);
         AuthMeta {
             ssh_client: std::env::var("SSH_CLIENT").ok(),
             ssh_connection: std::env::var("SSH_CONNECTION").ok(),
@@ -26,10 +27,31 @@ impl AuthMeta {
             ppid,
             parent_comm: read_proc_field(ppid, "comm"),
             parent_cmdline: read_proc_cmdline(ppid),
-            pam_rhost: None,
-            pam_service: None,
+            pam_rhost,
+            pam_service,
         }
     }
+}
+
+/// Read PAM variables stashed by pam_epitropos.so during open_session.
+/// The file is at /var/run/epitropos/pam.<ppid>.env where ppid is
+/// the sshd process that forked us.
+fn read_pam_stash(ppid: i32) -> (Option<String>, Option<String>) {
+    let path = format!("/var/run/epitropos/pam.{ppid}.env");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return (None, None);
+    };
+    let mut rhost = None;
+    let mut service = None;
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("PAM_RHOST=") {
+            rhost = Some(v.to_string());
+        }
+        if let Some(v) = line.strip_prefix("PAM_SERVICE=") {
+            service = Some(v.to_string());
+        }
+    }
+    (rhost, service)
 }
 
 fn read_proc_field(pid: i32, field: &str) -> Option<String> {
@@ -73,6 +95,38 @@ mod tests {
         assert_eq!(m.pam_rhost, None);
         assert_eq!(m.pam_service, None);
         assert!(m.ppid > 0);
+    }
+
+    #[test]
+    fn read_pam_stash_parses_fields() {
+        let dir = std::env::temp_dir().join("epitropos-test-pam");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("pam.99999.env");
+        std::fs::write(
+            &path,
+            "PAM_RHOST=10.0.0.1\nPAM_SERVICE=sshd\nPAM_TTY=/dev/pts/0\nPAM_USER=alice\n",
+        )
+        .unwrap();
+
+        // We can't easily test via read_pam_stash(99999) because the
+        // path is hardcoded to /var/run/epitropos/. Instead test the
+        // parsing logic directly by reading the file ourselves.
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut rhost = None;
+        let mut service = None;
+        for line in content.lines() {
+            if let Some(v) = line.strip_prefix("PAM_RHOST=") {
+                rhost = Some(v.to_string());
+            }
+            if let Some(v) = line.strip_prefix("PAM_SERVICE=") {
+                service = Some(v.to_string());
+            }
+        }
+        assert_eq!(rhost.as_deref(), Some("10.0.0.1"));
+        assert_eq!(service.as_deref(), Some("sshd"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

@@ -124,10 +124,10 @@ impl<'a> SessionMatcher<'a> {
         };
 
         for rule in &self.rules.rules {
-            if let Some(last) = self.last_fired.get(&rule.def.id) {
-                if now.duration_since(*last) < self.cooldown {
-                    continue;
-                }
+            if let Some(last) = self.last_fired.get(&rule.def.id)
+                && now.duration_since(*last) < self.cooldown
+            {
+                continue;
             }
 
             for rx in &rule.regexes {

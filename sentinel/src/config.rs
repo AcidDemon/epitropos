@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::SentinelError;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct Config {
@@ -210,20 +210,6 @@ impl Default for ChainCfg {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            storage: Storage::default(),
-            keys: Keys::default(),
-            rules: RulesCfg::default(),
-            cooldown: Cooldown::default(),
-            context: Context::default(),
-            journal: Journal::default(),
-            events_sidecar: EventsSidecar::default(),
-            chain: ChainCfg::default(),
-        }
-    }
-}
 
 impl Config {
     #[allow(dead_code)]

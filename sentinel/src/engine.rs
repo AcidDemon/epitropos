@@ -53,8 +53,9 @@ pub fn analyze_recording(
     let mut events: Vec<EventRecord> = Vec::new();
 
     iterate_records(recording_path, ctx.age_identity, |rec| {
-        if rec.kind == "out" || rec.kind == "in" {
-            if let Some(ref text) = rec.data {
+        if (rec.kind == "out" || rec.kind == "in")
+            && let Some(ref text) = rec.data
+        {
                 let hits = matcher.feed(rec.t, text);
                 for h in hits {
                     if ctx.emit_journal {
@@ -81,7 +82,6 @@ pub fn analyze_recording(
                     });
                 }
             }
-        }
         Ok(())
     })?;
 

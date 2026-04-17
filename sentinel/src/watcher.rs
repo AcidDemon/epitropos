@@ -96,12 +96,12 @@ fn discover_dirs(storage_dir: &Path) -> Result<Vec<PathBuf>, SentinelError> {
     if let Ok(entries) = std::fs::read_dir(&senders) {
         for entry in entries.flatten() {
             let recs = entry.path().join("recordings");
-            if recs.exists() {
-                if let Ok(user_dirs) = std::fs::read_dir(&recs) {
-                    for user_entry in user_dirs.flatten() {
-                        if user_entry.path().is_dir() {
-                            dirs.push(user_entry.path());
-                        }
+            if recs.exists()
+                && let Ok(user_dirs) = std::fs::read_dir(&recs)
+            {
+                for user_entry in user_dirs.flatten() {
+                    if user_entry.path().is_dir() {
+                        dirs.push(user_entry.path());
                     }
                 }
             }

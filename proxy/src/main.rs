@@ -321,6 +321,19 @@ fn run() -> Result<(), EpitroposError> {
         };
         extra_writers.push(w);
     }
+    if cfg.live.enabled {
+        let live_path =
+            std::path::Path::new(&cfg.live.directory).join(format!("{session_id}.kgv1"));
+        match backend::LiveMirror::create(&live_path) {
+            Ok(lm) => {
+                log::live_mirror_started(&session_id, live_path.display());
+                extra_writers.push(Box::new(lm));
+            }
+            Err(e) => {
+                eprintln!("epitropos: live mirror: {e}");
+            }
+        }
+    }
     let mut extra = backend::MultiWriter::new(extra_writers);
     if let Some(ref bytes) = header_bytes {
         let _ = recorder.write_raw(&mut extra, bytes);

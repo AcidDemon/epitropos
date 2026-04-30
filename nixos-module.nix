@@ -49,6 +49,10 @@ let
       max_messages = cfg.chunk.maxMessages;
       max_seconds = cfg.chunk.maxSeconds;
     };
+    live = {
+      enabled = cfg.live.enable;
+      directory = "/run/epitropos/live";
+    };
   };
 in
 {
@@ -199,6 +203,29 @@ in
         description = "How often the push timer fires (seconds).";
       };
     };
+
+    live = {
+      enable = mkEnableOption ''
+        live session viewing.
+        WARNING: the live mirror is always plaintext regardless of the
+        encryption setting. Enabling this means session content is
+        readable on disk while sessions are active. Restrict access
+        via the viewerGroup option
+      '';
+
+      package = mkOption {
+        type = types.package;
+        default = flakeSelf.packages.${pkgs.stdenv.hostPlatform.system}.epitropos-live;
+        defaultText = literalExpression "inputs.epitropos.packages.\${system}.epitropos-live";
+        description = "The epitropos-live package to use.";
+      };
+
+      viewerGroup = mkOption {
+        type = types.str;
+        default = "epitropos-live";
+        description = "Group allowed to view live sessions.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -210,7 +237,11 @@ in
       }
     ];
 
-    users.groups.${cfg.proxyGroup}.members = cfg.recordUsers;
+    users.groups = {
+      ${cfg.proxyGroup}.members = cfg.recordUsers;
+    } // lib.optionalAttrs cfg.live.enable {
+      ${cfg.live.viewerGroup} = { };
+    };
 
     users.users = {
       ${cfg.proxyUser} = {
@@ -232,15 +263,25 @@ in
       permissions = "u+rx,g+rx,o-rwx";
     };
 
-    security.wrappers.epitropos-ns-exec = {
-      source = "${cfg.package}/bin/epitropos-ns-exec";
-      owner = "root";
-      group = cfg.proxyGroup;
-      # +ep required: unshare(2) needs CAP_SYS_ADMIN in effective set.
-      # Binary drops all caps immediately after unshare+fork.
-      capabilities = "cap_sys_admin+ep";
-      setuid = false;
-      permissions = "u+rx,g+rx,o-rwx";
+    security.wrappers = {
+      epitropos-ns-exec = {
+        source = "${cfg.package}/bin/epitropos-ns-exec";
+        owner = "root";
+        group = cfg.proxyGroup;
+        # +ep required: unshare(2) needs CAP_SYS_ADMIN in effective set.
+        # Binary drops all caps immediately after unshare+fork.
+        capabilities = "cap_sys_admin+ep";
+        setuid = false;
+        permissions = "u+rx,g+rx,o-rwx";
+      };
+    } // lib.optionalAttrs cfg.live.enable {
+      epitropos-live = {
+        source = "${cfg.live.package}/bin/epitropos-live";
+        owner = "root";
+        group = cfg.live.viewerGroup;
+        setuid = false;
+        permissions = "u+rx,g+rx,o-rwx";
+      };
     };
 
     environment.etc."epitropos/config.toml" = {
@@ -254,6 +295,8 @@ in
       "d /var/run/epitropos 0700 ${cfg.proxyUser} ${cfg.proxyGroup} -"
     ] ++ lib.optionals cfg.forward.enable [
       "d /var/lib/epitropos-forward 0750 epitropos-forward epitropos-forward -"
+    ] ++ lib.optionals cfg.live.enable [
+      "d /run/epitropos/live 0750 ${cfg.proxyUser} ${cfg.live.viewerGroup} -"
     ];
 
     # Forward submodule: timer-driven push to the collector.

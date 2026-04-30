@@ -110,11 +110,39 @@
             };
           }
         );
+
+      mkEpitroposLive =
+        pkgs:
+        let
+          craneLib = mkCraneLib pkgs;
+          common = workspaceCommonArgs pkgs // {
+            pname = "epitropos-live";
+            version = "0.1.0";
+          };
+          cargoArtifacts = craneLib.buildDepsOnly (
+            common // { doCheck = false; }
+          );
+        in
+        craneLib.buildPackage (
+          common
+          // {
+            inherit cargoArtifacts;
+            doCheck = false;
+            cargoExtraArgs = "-p epitropos-live";
+            meta = {
+              description = "Live session viewer for epitropos recordings";
+              license = pkgs.lib.licenses.mit;
+              platforms = pkgs.lib.platforms.linux;
+              mainProgram = "epitropos-live";
+            };
+          }
+        );
     in
     {
       packages = forAllSystems (system: rec {
         epitropos = mkEpitropos (pkgsFor system);
         epitropos-collector = mkEpitroposCollector (pkgsFor system);
+        epitropos-live = mkEpitroposLive (pkgsFor system);
         default = epitropos;
       });
 

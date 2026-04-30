@@ -41,6 +41,15 @@ pub fn nesting_skip(session_id: &str, username: &str, reason: &str) {
     }));
 }
 
+pub fn live_mirror_started(session_id: &str, path: impl std::fmt::Display) {
+    emit(&json!({
+        "event": "live_mirror_started",
+        "session_id": session_id,
+        "path": path.to_string(),
+        "timestamp": timestamp_now(),
+    }));
+}
+
 fn emit(v: &serde_json::Value) {
     if let Ok(s) = serde_json::to_string(v) {
         eprintln!("{s}");

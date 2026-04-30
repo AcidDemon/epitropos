@@ -137,6 +137,43 @@ impl Write for FileWriter {
     }
 }
 
+pub struct LiveMirror {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+}
+
+impl LiveMirror {
+    pub fn create(path: &std::path::Path) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o640)
+            .open(path)?;
+        Ok(LiveMirror {
+            file,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+impl Write for LiveMirror {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.file.write(buf)?;
+        self.file.flush()?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Drop for LiveMirror {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,19 @@
+[package]
+name = "epitropos-live"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Live session viewer for epitropos recordings"
+
+[dependencies]
+base64 = "0.22"
+inotify = "0.11"
+libc = "0.2"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "epitropos-live"
+path = "src/main.rs"

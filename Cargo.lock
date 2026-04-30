@@ -518,6 +518,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "epitropos-live"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "inotify",
+ "libc",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "epitropos-sentinel"
 version = "0.1.0"
 dependencies = [

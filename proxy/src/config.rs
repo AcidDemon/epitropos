@@ -17,6 +17,8 @@ pub struct Config {
     pub hooks: Hooks,
     #[serde(default)]
     pub chunk: Chunk,
+    #[serde(default)]
+    pub live: Live,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -157,6 +159,24 @@ impl Shell {
             .map(|s| s.as_str())
             .unwrap_or(&self.default)
     }
+
+    fn validate(&self) -> Result<(), String> {
+        validate_shell_path("shell.default", &self.default)?;
+        for (user, path) in &self.users {
+            validate_shell_path(&format!("shell.users.{user}"), path)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_shell_path(field: &str, path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!("{field}: shell path must be absolute: {path}"));
+    }
+    if path.contains("..") {
+        return Err(format!("{field}: shell path must not contain '..': {path}"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,6 +229,33 @@ pub struct Hooks {
     pub on_recording_failure: String,
 }
 
+/// Live session viewing. When enabled, the proxy writes an unencrypted
+/// kgv1 mirror to the live directory. WARNING: the mirror is always
+/// plaintext regardless of the encryption setting.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Live {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "Live::default_directory")]
+    pub directory: String,
+}
+
+impl Live {
+    fn default_directory() -> String {
+        "/run/epitropos/live".to_string()
+    }
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directory: Self::default_directory(),
+        }
+    }
+}
+
 const CONFIG_PATH: &str = "/etc/epitropos/config.toml";
 
 pub fn load() -> Result<Config, String> {
@@ -218,7 +265,10 @@ pub fn load() -> Result<Config, String> {
 pub fn load_from(path: &str) -> Result<Config, String> {
     let contents =
         std::fs::read_to_string(path).map_err(|e| format!("cannot read config '{path}': {e}"))?;
-    toml::from_str(&contents).map_err(|e| format!("invalid config '{path}': {e}"))
+    let cfg: Config =
+        toml::from_str(&contents).map_err(|e| format!("invalid config '{path}': {e}"))?;
+    cfg.shell.validate()?;
+    Ok(cfg)
 }
 
 #[cfg(test)]

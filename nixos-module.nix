@@ -241,6 +241,8 @@ in
       ${cfg.proxyGroup}.members = cfg.recordUsers;
     } // lib.optionalAttrs cfg.live.enable {
       ${cfg.live.viewerGroup} = { };
+    } // lib.optionalAttrs cfg.forward.enable {
+      epitropos-forward = { };
     };
 
     users.users = {
@@ -253,17 +255,25 @@ in
       };
     } // lib.genAttrs cfg.recordUsers (_username: {
       shell = lib.mkForce "/run/wrappers/bin/epitropos";
-    });
-
-    security.wrappers.epitropos = {
-      source = lib.getExe cfg.package;
-      owner = cfg.proxyUser;
-      group = cfg.proxyGroup;
-      setuid = true;
-      permissions = "u+rx,g+rx,o-rwx";
+    }) // lib.optionalAttrs cfg.forward.enable {
+      epitropos-forward = {
+        isSystemUser = true;
+        group = "epitropos-forward";
+        description = "Epitropos recording shipper";
+        home = "/var/empty";
+        shell = "/run/current-system/sw/bin/nologin";
+        extraGroups = [ "katagrapho-readers" ];
+      };
     };
 
     security.wrappers = {
+      epitropos = {
+        source = lib.getExe cfg.package;
+        owner = cfg.proxyUser;
+        group = cfg.proxyGroup;
+        setuid = true;
+        permissions = "u+rx,g+rx,o-rwx";
+      };
       epitropos-ns-exec = {
         source = "${cfg.package}/bin/epitropos-ns-exec";
         owner = "root";
@@ -298,18 +308,6 @@ in
     ] ++ lib.optionals cfg.live.enable [
       "d /run/epitropos/live 0750 ${cfg.proxyUser} ${cfg.live.viewerGroup} -"
     ];
-
-    # Forward submodule: timer-driven push to the collector.
-    users.users.epitropos-forward = lib.mkIf cfg.forward.enable {
-      isSystemUser = true;
-      group = "epitropos-forward";
-      description = "Epitropos recording shipper";
-      home = "/var/empty";
-      shell = "/run/current-system/sw/bin/nologin";
-      extraGroups = [ "katagrapho-readers" ];
-    };
-
-    users.groups.epitropos-forward = lib.mkIf cfg.forward.enable { };
 
     systemd.services.epitropos-forward-push = lib.mkIf cfg.forward.enable {
       description = "Ship session recordings to collector";

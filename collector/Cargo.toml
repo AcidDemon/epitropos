@@ -8,8 +8,8 @@ description = "Off-host collector for epitropos session recordings"
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "macros", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "fs", "macros", "signal"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["limit"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+tower-http = { version = "0.6", features = ["limit", "timeout"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"

@@ -30,6 +30,11 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
+    // Read limits before `state` is moved into the router.
+    let max_body = state.cfg.storage.max_upload_bytes as usize;
+    let timeout = std::time::Duration::from_secs(state.cfg.listen.request_timeout_seconds);
+    let concurrency = state.cfg.listen.max_concurrent_requests;
+
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/enroll", post(enroll_handler))
@@ -37,6 +42,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{session_id}/parts/{part}",
             post(push_handler),
         )
+        // Bound resource use: cap the body (the configured max_upload_bytes is
+        // now authoritative, replacing axum's silent 2 MiB default), drop
+        // slow/stuck requests, and limit in-flight concurrency.
+        .layer(axum::extract::DefaultBodyLimit::max(max_body))
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            timeout,
+        ))
+        .layer(tower::limit::ConcurrencyLimitLayer::new(concurrency))
         .with_state(state)
 }
 
@@ -54,7 +68,7 @@ struct EnrollBody {
     signing_pub_hex: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct EnrollResponse {
     collector_tls_cert_pem: String,
     collector_fingerprint_sha256: String,
@@ -76,6 +90,13 @@ fn enroll_blocking(
     body: EnrollBody,
 ) -> Result<Json<EnrollResponse>, (StatusCode, String)> {
     let edir = EnrollmentDir::under(&state.cfg.storage.dir);
+
+    // Serialize validate -> burn -> write under an exclusive lock so a
+    // single-use token cannot be consumed by two concurrent requests (both
+    // would otherwise pass validation before either burns).
+    let _lock = edir
+        .lock_exclusive()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Validate the token.
     let validated = enroll::validate_token(&state.enroll_secret, &edir, &body.token)
@@ -125,6 +146,17 @@ fn enroll_blocking(
     if sender.root.exists() {
         return Err((StatusCode::CONFLICT, "sender already enrolled".into()));
     }
+
+    // Burn the token BEFORE writing any sender state: once all checks pass we
+    // commit the single use atomically, so a crash mid-write cannot leave a
+    // reusable token. (Conflicts above return without burning, so a wasted
+    // enrollment attempt does not consume the token.)
+    let mut h = Sha256::new();
+    h.update(body.token.as_bytes());
+    let token_hash = hex::encode(h.finalize());
+    enroll::burn(&edir, &token_hash)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     sender
         .ensure_created()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -136,13 +168,6 @@ fn enroll_blocking(
     storage::put_atomic(&sender.cert_fingerprint, fp_hex.as_bytes())
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     storage::put_atomic(&sender.signing_pub, &signing_pub)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Burn the token.
-    let mut h = Sha256::new();
-    h.update(body.token.as_bytes());
-    let token_hash = hex::encode(h.finalize());
-    enroll::burn(&edir, &token_hash)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Add to in-memory pinned set so the TLS verifier trusts this cert.
@@ -332,4 +357,71 @@ fn sha256_file_hex(path: &std::path::Path) -> String {
     let mut h = Sha256::new();
     h.update(&bytes);
     hex::encode(h.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn state_with(cfg: Config, secret: Vec<u8>) -> AppState {
+        AppState {
+            cfg: Arc::new(cfg),
+            pinned: PinnedCerts::new(),
+            enroll_secret: Arc::new(secret),
+            collector_cert_pem: Arc::new("collector-cert".into()),
+            collector_fingerprint_hex: Arc::new("fp".into()),
+        }
+    }
+
+    #[test]
+    fn enroll_token_is_single_use() {
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.storage.dir = dir.path().to_path_buf();
+        let secret = vec![7u8; 32];
+
+        let edir = EnrollmentDir::under(&cfg.storage.dir);
+        edir.ensure_created().unwrap();
+        let gt = enroll::generate_token(&secret, "sender-a", 3600).unwrap();
+        enroll::write_pending(&edir, &gt.token_hash_hex, "sender-a", gt.expires_at).unwrap();
+
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        crate::tls::generate_self_signed(&cert, &key, "sender-a").unwrap();
+        let cert_pem = std::fs::read_to_string(&cert).unwrap();
+
+        let state = state_with(cfg, secret);
+        let body = || EnrollBody {
+            sender_name: "sender-a".into(),
+            token: gt.token.clone(),
+            tls_cert_pem: cert_pem.clone(),
+            signing_pub_hex: hex::encode([9u8; 32]),
+        };
+
+        // First enroll succeeds; the token is burned before any state write.
+        assert!(enroll_blocking(state.clone(), body()).is_ok());
+        // The same token cannot be reused.
+        let (code, _) = enroll_blocking(state.clone(), body()).unwrap_err();
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "reused token must be rejected");
+    }
+
+    #[tokio::test]
+    async fn body_over_configured_limit_is_rejected() {
+        use tower::ServiceExt;
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.storage.dir = dir.path().to_path_buf();
+        cfg.storage.max_upload_bytes = 50; // authoritative, not axum's 2 MiB default
+        let app = router(state_with(cfg, vec![0u8; 32]));
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/sessions/s/parts/0")
+            .header("content-type", "application/octet-stream")
+            .body(axum::body::Body::from(vec![0u8; 100]))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }

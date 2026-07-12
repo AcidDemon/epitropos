@@ -107,18 +107,17 @@ impl ClientCertVerifier for PinnedClientVerifier {
 
     fn verify_client_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
+        _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, RustlsError> {
-        // The client presented a cert. Check its fingerprint.
-        if self.pinned.contains_der(end_entity.as_ref()) {
-            Ok(ClientCertVerified::assertion())
-        } else {
-            Err(RustlsError::General(
-                "client cert not in pinned set".into(),
-            ))
-        }
+        // Accept any well-formed client cert at the TLS layer; identity is
+        // enforced in the handlers, which have request context the TLS layer
+        // lacks: push requires the peer cert's fingerprint to be an enrolled
+        // sender, and enroll binds the presented cert (proving the enroller
+        // holds its key) gated by a single-use token. This lets a not-yet-
+        // enrolled sender present its cert during enrollment.
+        Ok(ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -301,29 +300,23 @@ mod tests {
     }
 
     #[test]
-    fn verify_client_cert_accepts_pinned_rejects_unpinned() {
+    fn verify_client_cert_accepts_any_valid_cert() {
+        // The TLS layer accepts any well-formed client cert; identity is
+        // enforced in the handlers (enrolled-fingerprint check on push, cert
+        // binding on enroll), so a not-yet-enrolled sender can present its cert.
         let dir = tempdir().unwrap();
         let cert = dir.path().join("c.pem");
         let key = dir.path().join("k.pem");
         generate_self_signed(&cert, &key, "sender").unwrap();
         let der = read_cert_der(&cert).unwrap();
 
-        let pinned = PinnedCerts::new();
-        pinned.add_der(&der);
-        let verifier = PinnedClientVerifier::new(pinned);
-        let now = UnixTime::now();
-
-        // The pinned cert is accepted.
-        let pinned_cert = CertificateDer::from(der);
-        assert!(verifier.verify_client_cert(&pinned_cert, &[], now).is_ok());
-
-        // A different (unpinned) cert is rejected at the TLS layer.
-        let cert2 = dir.path().join("c2.pem");
-        let key2 = dir.path().join("k2.pem");
-        generate_self_signed(&cert2, &key2, "other").unwrap();
-        let der2 = read_cert_der(&cert2).unwrap();
-        let other_cert = CertificateDer::from(der2);
-        assert!(verifier.verify_client_cert(&other_cert, &[], now).is_err());
+        let verifier = PinnedClientVerifier::new(PinnedCerts::new());
+        let cert_der = CertificateDer::from(der);
+        assert!(
+            verifier
+                .verify_client_cert(&cert_der, &[], UnixTime::now())
+                .is_ok()
+        );
     }
 
     #[test]

@@ -66,7 +66,7 @@ async fn health() -> &'static str {
 
 // --- Enrollment ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct EnrollBody {
     sender_name: String,
     token: String,
@@ -82,17 +82,19 @@ struct EnrollResponse {
 
 async fn enroll_handler(
     State(state): State<AppState>,
+    Extension(peer): Extension<PeerFingerprint>,
     Json(body): Json<EnrollBody>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, String)> {
     // Run blocking filesystem operations in a spawn_blocking task.
     let state2 = state.clone();
-    tokio::task::spawn_blocking(move || enroll_blocking(state2, body))
+    tokio::task::spawn_blocking(move || enroll_blocking(state2, peer.0, body))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
 fn enroll_blocking(
     state: AppState,
+    peer_fingerprint: Option<String>,
     body: EnrollBody,
 ) -> Result<Json<EnrollResponse>, (StatusCode, String)> {
     let edir = EnrollmentDir::under(&state.cfg.storage.dir);
@@ -135,6 +137,17 @@ fn enroll_blocking(
         return Err((StatusCode::BAD_REQUEST, "expected exactly one cert".into()));
     }
     let cert_der = &tls_cert_ders[0];
+
+    // Proof of possession: the enrolling cert must equal the cert presented in
+    // the TLS handshake, which proves the client holds its private key. This
+    // rejects registering a cert the client does not control.
+    let cert_fp = crate::tls::fingerprint_hex(cert_der.as_ref());
+    if peer_fingerprint.as_deref() != Some(cert_fp.as_str()) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "enrollment cert must be presented as the TLS client certificate".into(),
+        ));
+    }
 
     // Parse signing pubkey.
     let signing_pub = hex::decode(&body.signing_pub_hex)
@@ -396,6 +409,8 @@ mod tests {
         let key = dir.path().join("key.pem");
         crate::tls::generate_self_signed(&cert, &key, "sender-a").unwrap();
         let cert_pem = std::fs::read_to_string(&cert).unwrap();
+        // The cert the sender presents in the TLS handshake == the one it enrolls.
+        let cert_fp = crate::tls::fingerprint_hex(&crate::tls::read_cert_der(&cert).unwrap());
 
         let state = state_with(cfg, secret);
         let body = || EnrollBody {
@@ -406,10 +421,44 @@ mod tests {
         };
 
         // First enroll succeeds; the token is burned before any state write.
-        assert!(enroll_blocking(state.clone(), body()).is_ok());
+        assert!(enroll_blocking(state.clone(), Some(cert_fp.clone()), body()).is_ok());
         // The same token cannot be reused.
-        let (code, _) = enroll_blocking(state.clone(), body()).unwrap_err();
+        let (code, _) = enroll_blocking(state.clone(), Some(cert_fp), body()).unwrap_err();
         assert_eq!(code, StatusCode::UNAUTHORIZED, "reused token must be rejected");
+    }
+
+    #[test]
+    fn enroll_requires_cert_presented_in_handshake() {
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.storage.dir = dir.path().to_path_buf();
+        let secret = vec![7u8; 32];
+
+        let edir = EnrollmentDir::under(&cfg.storage.dir);
+        edir.ensure_created().unwrap();
+        let gt = enroll::generate_token(&secret, "sender-a", 3600).unwrap();
+        enroll::write_pending(&edir, &gt.token_hash_hex, "sender-a", gt.expires_at).unwrap();
+
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        crate::tls::generate_self_signed(&cert, &key, "sender-a").unwrap();
+        let cert_pem = std::fs::read_to_string(&cert).unwrap();
+
+        let state = state_with(cfg, secret);
+        let body = EnrollBody {
+            sender_name: "sender-a".into(),
+            token: gt.token.clone(),
+            tls_cert_pem: cert_pem,
+            signing_pub_hex: hex::encode([9u8; 32]),
+        };
+
+        // No client cert presented, or a cert that doesn't match the enrolling
+        // cert -> rejected (no proof the enroller holds the key).
+        let (code, _) = enroll_blocking(state.clone(), None, body.clone()).unwrap_err();
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        let (code, _) =
+            enroll_blocking(state, Some("deadbeef".into()), body).unwrap_err();
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
     }
 
     #[test]

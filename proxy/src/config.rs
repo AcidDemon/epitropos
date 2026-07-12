@@ -245,9 +245,10 @@ pub struct Hooks {
     pub on_recording_failure: String,
 }
 
-/// Live session viewing. When enabled, the proxy writes an unencrypted
-/// kgv1 mirror to the live directory. WARNING: the mirror is always
-/// plaintext regardless of the encryption setting.
+/// Live session viewing. When enabled, the proxy writes a mirror of the session
+/// to the live directory, encrypted per-record to the operator recipient in
+/// `recipient_file` — only a viewer holding the matching age identity can read
+/// it. `recipient_file` is required when `enabled`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Live {
@@ -255,6 +256,11 @@ pub struct Live {
     pub enabled: bool,
     #[serde(default = "Live::default_directory")]
     pub directory: String,
+    /// Path to the dedicated live-viewer age PUBLIC recipient (`age1...`).
+    /// Distinct from the archive/recording recipient, so "watch live" is a
+    /// separate capability from "decrypt the archive".
+    #[serde(default)]
+    pub recipient_file: String,
 }
 
 impl Live {
@@ -268,6 +274,7 @@ impl Default for Live {
         Self {
             enabled: false,
             directory: Self::default_directory(),
+            recipient_file: String::new(),
         }
     }
 }
@@ -284,6 +291,11 @@ pub fn load_from(path: &str) -> Result<Config, String> {
     let cfg: Config =
         toml::from_str(&contents).map_err(|e| format!("invalid config '{path}': {e}"))?;
     cfg.shell.validate()?;
+    // Fail closed: an enabled live mirror must have a recipient, or it would
+    // fall back to writing plaintext / fail obscurely at runtime.
+    if cfg.live.enabled && cfg.live.recipient_file.trim().is_empty() {
+        return Err("live.enabled = true requires live.recipient_file".to_string());
+    }
     Ok(cfg)
 }
 

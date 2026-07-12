@@ -349,16 +349,31 @@ fn run() -> Result<(), EpitroposError> {
         extra_writers.push(w);
     }
     if cfg.live.enabled {
+        // Encrypted mirror: the proxy holds only the operator's public recipient
+        // (config validated non-empty when live is enabled). Live viewing is
+        // best-effort — a bad/unreadable recipient logs and skips the mirror
+        // without affecting the recording.
         let live_path =
-            std::path::Path::new(&cfg.live.directory).join(format!("{session_id}.kgv1"));
-        match backend::LiveMirror::create(&live_path) {
-            Ok(lm) => {
-                log::live_mirror_started(&session_id, live_path.display());
-                extra_writers.push(Box::new(lm));
+            std::path::Path::new(&cfg.live.directory).join(format!("{session_id}.age"));
+        match std::fs::read_to_string(&cfg.live.recipient_file) {
+            Ok(contents) => {
+                let recipient = contents
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty() && !l.starts_with('#'))
+                    .unwrap_or("");
+                match backend::LiveMirror::create(&live_path, recipient) {
+                    Ok(lm) => {
+                        log::live_mirror_started(&session_id, live_path.display());
+                        extra_writers.push(Box::new(lm));
+                    }
+                    Err(e) => eprintln!("epitropos: live mirror: {e}"),
+                }
             }
-            Err(e) => {
-                eprintln!("epitropos: live mirror: {e}");
-            }
+            Err(e) => eprintln!(
+                "epitropos: live mirror recipient {}: {e}",
+                cfg.live.recipient_file
+            ),
         }
     }
     let mut extra = backend::MultiWriter::new(extra_writers);

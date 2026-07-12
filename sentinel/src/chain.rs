@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -10,6 +11,45 @@ use std::path::PathBuf;
 
 use crate::error::SentinelError;
 use crate::events::GENESIS_PREV;
+
+/// Result of walking the events-sidecar hash chain from the head to genesis.
+#[derive(Debug)]
+pub struct ChainWalk {
+    pub links_traversed: usize,
+}
+
+/// Walk the sidecar chain from `head` back to `GENESIS_PREV`, following each
+/// `this_events_hash -> prev_events_hash` link in `links` (one entry per
+/// verified sidecar). A hash absent from `links` is a sidecar that was deleted
+/// or moved out of the tree — the chain is broken and a detection may have been
+/// erased. Pure + testable; the fs enumeration lives in the caller.
+pub fn walk_chain(
+    head: &str,
+    links: &HashMap<String, String>,
+) -> Result<ChainWalk, SentinelError> {
+    let mut current = head.to_string();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut n = 0usize;
+    while current != GENESIS_PREV {
+        if !seen.insert(current.clone()) {
+            return Err(SentinelError::Chain(format!(
+                "chain cycle detected at {current}"
+            )));
+        }
+        match links.get(&current) {
+            Some(prev) => {
+                current.clone_from(prev);
+                n += 1;
+            }
+            None => {
+                return Err(SentinelError::Chain(format!(
+                    "broken chain: sidecar {current} is missing (deleted or moved)"
+                )));
+            }
+        }
+    }
+    Ok(ChainWalk { links_traversed: n })
+}
 
 pub struct ChainPaths {
     pub head: PathBuf,
@@ -119,5 +159,43 @@ mod tests {
         let dir = tempdir().unwrap();
         let c = ChainPaths::new(dir.path().join("head.hash"));
         assert!(write_head(&c, "deadbeef").is_err());
+    }
+
+    fn chain_links(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(t, p)| (t.to_string(), p.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn walk_chain_intact_reaches_genesis() {
+        // genesis <- s1 <- s2 <- s3 (head)
+        let links = chain_links(&[("s1", GENESIS_PREV), ("s2", "s1"), ("s3", "s2")]);
+        let w = walk_chain("s3", &links).unwrap();
+        assert_eq!(w.links_traversed, 3);
+    }
+
+    #[test]
+    fn walk_chain_detects_deleted_sidecar() {
+        // s2 deleted: head s3 -> s2 (missing from the map)
+        let links = chain_links(&[("s1", GENESIS_PREV), ("s3", "s2")]);
+        let err = walk_chain("s3", &links).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("s2"),
+            "error must name the missing sidecar hash, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn walk_chain_empty_head_is_genesis() {
+        let w = walk_chain(GENESIS_PREV, &HashMap::new()).unwrap();
+        assert_eq!(w.links_traversed, 0);
+    }
+
+    #[test]
+    fn walk_chain_detects_cycle() {
+        let links = chain_links(&[("a", "b"), ("b", "a")]);
+        assert!(walk_chain("a", &links).is_err());
     }
 }

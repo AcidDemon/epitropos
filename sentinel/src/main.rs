@@ -32,6 +32,7 @@ fn main() {
         "analyze" => cmd_analyze(&args[2..]),
         "list-rules" => cmd_list_rules(&args[2..]),
         "verify" => cmd_verify(&args[2..]),
+        "verify-chain" => cmd_verify_chain(&args[2..]),
         "--help" | "-h" | "help" => {
             print_usage();
             Ok(())
@@ -55,6 +56,7 @@ fn print_usage() {
            analyze <manifest-path> [--config PATH] [--force]\n\
            list-rules [--config PATH]\n\
            verify <events-sidecar-path> [--config PATH]\n\
+           verify-chain [--config PATH]\n\
            --version"
     );
 }
@@ -246,6 +248,89 @@ fn cmd_verify(args: &[String]) -> Result<(), SentinelError> {
     sc.verify(&arr)?;
     println!("ok: {path}");
     Ok(())
+}
+
+/// Walk the whole events-sidecar chain from the head back to genesis and flag
+/// any missing link — i.e. a sidecar that was deleted or moved out of the tree
+/// to erase a detection. Verifies every sidecar's signature along the way.
+fn cmd_verify_chain(args: &[String]) -> Result<(), SentinelError> {
+    let cfg = load_config(args)?;
+    let pub_bytes = std::fs::read(&cfg.keys.signing_pub)
+        .map_err(|e| SentinelError::Verify(format!("read pub: {e}")))?;
+    if pub_bytes.len() != 32 {
+        return Err(SentinelError::Verify("pub key wrong length".into()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&pub_bytes);
+
+    let head = chain::read_head(&ChainPaths::new(cfg.chain.head_path.clone()))?;
+
+    // Load + verify every sidecar, mapping this_events_hash -> prev_events_hash.
+    let mut links: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let (mut verified, mut bad) = (0usize, 0usize);
+    for path in collect_sidecars(&cfg.storage.dir) {
+        match EventsSidecar::load_from(&path) {
+            Ok(sc) => match sc.verify(&arr) {
+                Ok(()) => {
+                    links.insert(sc.this_events_hash.clone(), sc.prev_events_hash.clone());
+                    verified += 1;
+                }
+                Err(e) => {
+                    eprintln!("epitropos-sentinel: BAD sidecar {}: {e}", path.display());
+                    bad += 1;
+                }
+            },
+            Err(e) => {
+                eprintln!("epitropos-sentinel: unreadable sidecar {}: {e}", path.display());
+                bad += 1;
+            }
+        }
+    }
+
+    // Walk head -> genesis; a missing link is a deleted/moved sidecar (hard fail).
+    let walk = chain::walk_chain(&head, &links)?;
+    if bad > 0 {
+        return Err(SentinelError::Verify(format!(
+            "{bad} sidecar(s) failed signature/hash verification"
+        )));
+    }
+    // Orphans: verified sidecars not on the head->genesis path (e.g. a crash
+    // between sidecar write and head advance). Warn, do not fail.
+    if verified > walk.links_traversed {
+        eprintln!(
+            "epitropos-sentinel: warning: {} sidecar(s) not on the head chain (orphan/unadvanced tip)",
+            verified - walk.links_traversed
+        );
+    }
+    println!(
+        "chain intact: head reaches genesis through {} sidecar(s) ({verified} verified)",
+        walk.links_traversed
+    );
+    Ok(())
+}
+
+/// Recursively collect every `*.events.json` sidecar under `root`.
+fn collect_sidecars(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    fn recurse(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                recurse(&p, out);
+            } else if p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".events.json"))
+            {
+                out.push(p);
+            }
+        }
+    }
+    recurse(root, &mut out);
+    out
 }
 
 // --- serve ---

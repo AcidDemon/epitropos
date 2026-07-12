@@ -36,6 +36,7 @@ fn main() {
 
 fn cmd_list(args: &[String]) {
     let mut dir = DEFAULT_LIVE_DIR.to_string();
+    let mut identity_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -44,8 +45,12 @@ fn cmd_list(args: &[String]) {
                 i += 1;
                 dir = args[i].clone();
             }
+            "-i" | "--identity" if i + 1 < args.len() => {
+                i += 1;
+                identity_path = Some(args[i].clone());
+            }
             "-h" | "--help" => {
-                eprintln!("Usage: epitropos-live list [--dir DIR]");
+                eprintln!("Usage: epitropos-live list [--dir DIR] [--identity KEYFILE]");
                 std::process::exit(0);
             }
             other => {
@@ -56,7 +61,8 @@ fn cmd_list(args: &[String]) {
         i += 1;
     }
 
-    let sessions = discover::list_sessions(std::path::Path::new(&dir));
+    let identity = load_identity(identity_path);
+    let sessions = discover::list_sessions(std::path::Path::new(&dir), &identity);
     if sessions.is_empty() {
         eprintln!("No active sessions.");
         return;
@@ -77,6 +83,7 @@ fn cmd_list(args: &[String]) {
 fn cmd_watch(args: &[String]) {
     let mut dir = DEFAULT_LIVE_DIR.to_string();
     let mut session_id: Option<String> = None;
+    let mut identity_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -85,8 +92,12 @@ fn cmd_watch(args: &[String]) {
                 i += 1;
                 dir = args[i].clone();
             }
+            "-i" | "--identity" if i + 1 < args.len() => {
+                i += 1;
+                identity_path = Some(args[i].clone());
+            }
             "-h" | "--help" => {
-                eprintln!("Usage: epitropos-live watch [--dir DIR] <SESSION_ID>");
+                eprintln!("Usage: epitropos-live watch [--dir DIR] [--identity KEYFILE] <SESSION_ID>");
                 std::process::exit(0);
             }
             other if !other.starts_with('-') => {
@@ -100,6 +111,8 @@ fn cmd_watch(args: &[String]) {
         i += 1;
     }
 
+    let identity = load_identity(identity_path);
+
     let sid = match session_id {
         Some(s) => s,
         None => {
@@ -108,14 +121,14 @@ fn cmd_watch(args: &[String]) {
         }
     };
 
-    let path = std::path::Path::new(&dir).join(format!("{sid}.kgv1"));
+    let path = std::path::Path::new(&dir).join(format!("{sid}.age"));
     if !path.exists() {
         eprintln!("epitropos-live: session not found: {sid}");
         eprintln!("Use 'epitropos-live list' to see active sessions.");
         std::process::exit(1);
     }
 
-    if let Some(info) = discover::list_sessions(std::path::Path::new(&dir))
+    if let Some(info) = discover::list_sessions(std::path::Path::new(&dir), &identity)
         .into_iter()
         .find(|s| s.session_id == sid)
     {
@@ -135,7 +148,7 @@ fn cmd_watch(args: &[String]) {
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    match stream::stream_session(&path, &mut out, &CTRL_C_FLAG) {
+    match stream::stream_session(&path, &mut out, &CTRL_C_FLAG, &identity) {
         Ok(result) => {
             eprintln!(
                 "\nSession ended ({} output records).",
@@ -147,6 +160,35 @@ fn cmd_watch(args: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+/// Load the operator age identity from `--identity <path>` or the
+/// EPITROPOS_LIVE_IDENTITY env var. The identity is the capability to view live
+/// sessions; it is never shipped in the Nix store and must be operator-managed.
+/// Exits with a clear message if absent or invalid.
+fn load_identity(flag: Option<String>) -> age::x25519::Identity {
+    let path = flag
+        .or_else(|| std::env::var("EPITROPOS_LIVE_IDENTITY").ok())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "epitropos-live: an age identity is required to decrypt live sessions\n\
+                 provide it with --identity <path> or the EPITROPOS_LIVE_IDENTITY env var"
+            );
+            std::process::exit(1);
+        });
+    let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("epitropos-live: cannot read identity {path}: {e}");
+        std::process::exit(1);
+    });
+    let line = contents
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("");
+    line.parse().unwrap_or_else(|e| {
+        eprintln!("epitropos-live: invalid age identity in {path}: {e}");
+        std::process::exit(1);
+    })
 }
 
 extern "C" fn sigint_handler(_: libc::c_int) {

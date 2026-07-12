@@ -140,27 +140,68 @@ impl Write for FileWriter {
 pub struct LiveMirror {
     file: std::fs::File,
     path: std::path::PathBuf,
+    recipient: age::x25519::Recipient,
 }
 
 impl LiveMirror {
-    pub fn create(path: &std::path::Path) -> std::io::Result<Self> {
+    /// Create an encrypted live mirror. Each record is encrypted to `recipient`
+    /// as a standalone, length-prefixed age blob (`[u32 LE len][age blob]`), so
+    /// a viewer holding the matching identity can decrypt records as they are
+    /// tailed and nobody else — not even the shared session-proxy account that
+    /// writes the file — can read the session content. The proxy holds only the
+    /// public recipient. Ciphertext is safe at rest, so the file is 0o644 and
+    /// access control is the identity, not the filesystem ACL.
+    pub fn create(path: &std::path::Path, recipient_str: &str) -> std::io::Result<Self> {
+        let recipient: age::x25519::Recipient = recipient_str.trim().parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid live recipient key: {e}"),
+            )
+        })?;
         let file = std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .mode(0o640)
+            .mode(0o644)
             .open(path)?;
         Ok(LiveMirror {
             file,
             path: path.to_path_buf(),
+            recipient,
         })
+    }
+
+    /// Encrypt one record into a standalone age blob (header + one chunk +
+    /// finalize marker). `finish()` MUST run or the blob is truncated and
+    /// undecryptable, so the frame is only emitted after it succeeds.
+    fn encrypt_record(&self, buf: &[u8]) -> std::io::Result<Vec<u8>> {
+        let encryptor = age::Encryptor::with_recipients(std::iter::once(
+            &self.recipient as &dyn age::Recipient,
+        ))
+        .map_err(|e| std::io::Error::other(format!("age encryptor: {e}")))?;
+        let mut blob = Vec::new();
+        let mut w = encryptor
+            .wrap_output(&mut blob)
+            .map_err(|e| std::io::Error::other(format!("age wrap: {e}")))?;
+        w.write_all(buf)?;
+        w.finish()
+            .map_err(|e| std::io::Error::other(format!("age finish: {e}")))?;
+        Ok(blob)
     }
 }
 
 impl Write for LiveMirror {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.file.write(buf)?;
+        // One age blob per record — ~215B header overhead each, which buys
+        // per-record live latency vs age STREAM's 64KiB chunk buffering. A
+        // record is one PTY read (<=64KiB), so overhead is negligible on bulk
+        // output; the tmpfs mirror is bounded and write errors are non-fatal.
+        let blob = self.encrypt_record(buf)?;
+        let len = u32::try_from(blob.len())
+            .map_err(|_| std::io::Error::other("live mirror blob exceeds u32"))?;
+        self.file.write_all(&len.to_le_bytes())?;
+        self.file.write_all(&blob)?;
         self.file.flush()?;
-        Ok(n)
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -200,5 +241,76 @@ mod tests {
         let mut mw = MultiWriter::new(vec![Box::new(FailWriter), Box::new(Vec::<u8>::new())]);
         // Should return error from FailWriter but second writer still gets data
         assert!(mw.write(b"hello").is_err());
+    }
+
+    fn decode_frames(framed: &[u8], identity: &age::x25519::Identity) -> Vec<Vec<u8>> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        let mut off = 0usize;
+        while off + 4 <= framed.len() {
+            let len = u32::from_le_bytes(framed[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            let blob = &framed[off..off + len];
+            off += len;
+            let dec = age::Decryptor::new(std::io::Cursor::new(blob)).unwrap();
+            let mut r = dec
+                .decrypt(std::iter::once(identity as &dyn age::Identity))
+                .unwrap();
+            let mut plain = Vec::new();
+            r.read_to_end(&mut plain).unwrap();
+            out.push(plain);
+        }
+        out
+    }
+
+    #[test]
+    fn live_mirror_encrypts_each_record_as_framed_age_blob() {
+        let identity = age::x25519::Identity::generate();
+        let recipient = identity.to_public();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sess.age");
+
+        let rec1 = b"{\"kind\":\"out\",\"t\":0.1,\"b\":\"aGk=\"}\n".to_vec();
+        let rec2 = b"{\"kind\":\"in\",\"t\":0.2,\"b\":\"eA==\"}\n".to_vec();
+        let framed = {
+            let mut m = LiveMirror::create(&path, &recipient.to_string()).unwrap();
+            m.write_all(&rec1).unwrap();
+            m.write_all(&rec2).unwrap();
+            m.flush().unwrap();
+            std::fs::read(&path).unwrap() // read while alive; Drop removes it
+        };
+
+        let got = decode_frames(&framed, &identity);
+        assert_eq!(
+            got,
+            vec![rec1, rec2],
+            "records must round-trip through the age framing"
+        );
+    }
+
+    #[test]
+    fn live_mirror_file_contains_no_plaintext() {
+        let identity = age::x25519::Identity::generate();
+        let recipient = identity.to_public();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.age");
+        let secret = b"SECRET-PASSWORD-1234\n";
+        let framed = {
+            let mut m = LiveMirror::create(&path, &recipient.to_string()).unwrap();
+            m.write_all(secret).unwrap();
+            m.flush().unwrap();
+            std::fs::read(&path).unwrap()
+        };
+        assert!(
+            !framed.windows(secret.len()).any(|w| w == secret),
+            "session content must not appear in cleartext in the mirror"
+        );
+    }
+
+    #[test]
+    fn live_mirror_rejects_bad_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.age");
+        assert!(LiveMirror::create(&path, "not-an-age-recipient").is_err());
     }
 }

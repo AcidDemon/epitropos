@@ -53,6 +53,7 @@ let
     live = {
       enabled = cfg.live.enable;
       directory = "/run/epitropos/live";
+      recipient_file = if cfg.live.recipientFile != null then cfg.live.recipientFile else "";
     };
   };
 in
@@ -221,11 +222,10 @@ in
 
     live = {
       enable = mkEnableOption ''
-        live session viewing.
-        WARNING: the live mirror is always plaintext regardless of the
-        encryption setting. Enabling this means session content is
-        readable on disk while sessions are active. Restrict access
-        via the viewerGroup option
+        live session viewing. The live mirror is encrypted per-record to the
+        operator recipient in live.recipientFile; only a viewer holding the
+        matching age identity can read it, so possessing the identity — not a
+        Unix group — is the access control. Requires live.recipientFile
       '';
 
       package = mkOption {
@@ -235,10 +235,17 @@ in
         description = "The epitropos-live package to use.";
       };
 
-      viewerGroup = mkOption {
-        type = types.str;
-        default = "epitropos-live";
-        description = "Group allowed to view live sessions.";
+      recipientFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to the dedicated live-viewer age PUBLIC recipient (age1...).
+          Distinct from encryption.recipientFile so that "watch live sessions"
+          is a separate capability from "decrypt the archive". Required when
+          live.enable is true. The matching secret identity is provisioned to
+          operators out of band (agenix/sops, never in the Nix store) and passed
+          to epitropos-live via --identity or EPITROPOS_LIVE_IDENTITY.
+        '';
       };
     };
   };
@@ -250,12 +257,14 @@ in
         assertion = config.services.katagrapho.enable or false;
         message = "epitropos requires services.katagrapho.enable = true for session recording storage.";
       }
+      {
+        assertion = !cfg.live.enable || cfg.live.recipientFile != null;
+        message = "services.epitropos.live.enable requires services.epitropos.live.recipientFile (the operator's age public recipient).";
+      }
     ];
 
     users.groups = {
       ${cfg.proxyGroup}.members = cfg.recordUsers;
-    } // lib.optionalAttrs cfg.live.enable {
-      ${cfg.live.viewerGroup} = { };
     } // lib.optionalAttrs cfg.forward.enable {
       epitropos-forward = { };
     };
@@ -300,12 +309,15 @@ in
         permissions = "u+rx,g+rx,o-rwx";
       };
     } // lib.optionalAttrs cfg.live.enable {
+      # Not setuid and no longer group-gated: the mirror is encrypted, so
+      # running the viewer without the operator age identity yields nothing.
+      # Access control is the identity, not who may execute this launcher.
       epitropos-live = {
         source = "${cfg.live.package}/bin/epitropos-live";
         owner = "root";
-        group = cfg.live.viewerGroup;
+        group = cfg.proxyGroup;
         setuid = false;
-        permissions = "u+rx,g+rx,o-rwx";
+        permissions = "u+rx,g+rx,o+rx";
       };
     };
 
@@ -317,11 +329,21 @@ in
     };
 
     systemd.tmpfiles.rules = [
-      "d /var/run/epitropos 0700 ${cfg.proxyUser} ${cfg.proxyGroup} -"
+      # setgid (2xxx) so root-written PAM stash files inherit proxyGroup and the
+      # proxy can group-read the handoff; owner-only (x700) so recorded users
+      # (all in proxyGroup) cannot traverse the dir to read another session's
+      # stash. The proxy accesses as owner (proxyUser), so no group-traverse is
+      # needed. Symlink-race writes are prevented by O_NOFOLLOW|O_EXCL in
+      # pam_epitropos.c, independent of this ownership.
+      "d /var/run/epitropos 2700 ${cfg.proxyUser} ${cfg.proxyGroup} -"
     ] ++ lib.optionals cfg.forward.enable [
       "d /var/lib/epitropos-forward 0750 epitropos-forward epitropos-forward -"
     ] ++ lib.optionals cfg.live.enable [
-      "d /run/epitropos/live 0750 ${cfg.proxyUser} ${cfg.live.viewerGroup} -"
+      # World-traversable so any operator holding the age identity can read the
+      # encrypted mirror; the ciphertext (0644) is the only thing on disk, so
+      # the ACL is not the confidentiality boundary. Local users can see session
+      # ids (filenames) + sizes/mtimes but not content.
+      "d /run/epitropos/live 0755 ${cfg.proxyUser} ${cfg.proxyGroup} -"
     ];
 
     systemd.services.epitropos-forward-push = lib.mkIf cfg.forward.enable {

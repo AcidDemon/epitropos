@@ -469,6 +469,7 @@ dependencies = [
 name = "epitropos"
 version = "0.1.0"
 dependencies = [
+ "age",
  "assert_cmd",
  "base64 0.22.1",
  "hex",
@@ -521,6 +522,7 @@ dependencies = [
 name = "epitropos-live"
 version = "0.1.0"
 dependencies = [
+ "age",
  "base64 0.22.1",
  "inotify",
  "libc",

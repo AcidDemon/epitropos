@@ -12,6 +12,7 @@
  */
 
 #include <security/pam_modules.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -21,6 +22,27 @@
 static void get_path(char *buf, size_t len)
 {
 	snprintf(buf, len, "%s/pam.%d.env", ENV_DIR, (int)getpid());
+}
+
+/*
+ * Accept a PAM value only if it contains no control bytes. A value with an
+ * embedded newline (e.g. a crafted rhost from unverified reverse DNS) would
+ * otherwise inject a forged PAM_* line into the stash file that the proxy reads
+ * into the recording header. Rejected fields are omitted.
+ */
+static int value_is_clean(const char *v)
+{
+	for (const unsigned char *p = (const unsigned char *)v; *p; p++) {
+		if (*p < 0x20 || *p == 0x7f)
+			return 0;
+	}
+	return 1;
+}
+
+static void write_field(FILE *f, const char *key, const char *val)
+{
+	if (val && value_is_clean(val))
+		fprintf(f, "%s=%s\n", key, val);
 }
 
 PAM_EXTERN int
@@ -44,20 +66,34 @@ pam_sm_open_session(pam_handle_t *pamh, int flags, int argc,
 	char path[256];
 	get_path(path, sizeof(path));
 
-	FILE *f = fopen(path, "w");
-	if (!f)
-		return PAM_SUCCESS;
+	/*
+	 * O_EXCL | O_NOFOLLOW: never follow a symlink or open a pre-existing
+	 * file — root must not be tricked into writing through a planted
+	 * symlink even if the stash dir's ownership regresses. On a stale file
+	 * left by a crashed prior session (pid reuse), unlink and retry once.
+	 */
+	int fd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0640);
+	if (fd < 0) {
+		unlink(path);
+		fd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0640);
+		if (fd < 0)
+			return PAM_SUCCESS;
+	}
 
+	FILE *f = fdopen(fd, "w");
+	if (!f) {
+		close(fd);
+		return PAM_SUCCESS;
+	}
+
+	/* Guarantee 0640 regardless of umask so the proxy (in the dir's group,
+	 * via the setgid stash dir) can read the handoff. */
 	fchmod(fileno(f), 0640);
 
-	if (rhost)
-		fprintf(f, "PAM_RHOST=%s\n", rhost);
-	if (service)
-		fprintf(f, "PAM_SERVICE=%s\n", service);
-	if (tty)
-		fprintf(f, "PAM_TTY=%s\n", tty);
-	if (user)
-		fprintf(f, "PAM_USER=%s\n", user);
+	write_field(f, "PAM_RHOST", rhost);
+	write_field(f, "PAM_SERVICE", service);
+	write_field(f, "PAM_TTY", tty);
+	write_field(f, "PAM_USER", user);
 
 	fclose(f);
 	return PAM_SUCCESS;

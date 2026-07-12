@@ -41,17 +41,36 @@ fn read_pam_stash(ppid: i32) -> (Option<String>, Option<String>) {
     let Ok(content) = fs::read_to_string(&path) else {
         return (None, None);
     };
+    parse_pam_stash(&content)
+}
+
+/// Parse the PAM stash content into (rhost, service). Pure + testable.
+/// Rejects any value containing a control byte (0x00-0x1f) or DEL (0x7f):
+/// the values derive from attacker-influenceable PAM items (e.g. rhost from
+/// unverified reverse DNS) and flow unescaped-in-spirit into the recording
+/// header and the theatron web UI, so an escape/control sequence must not
+/// survive. Newline injection is prevented at the write side (pam_epitropos.c);
+/// this is defense-in-depth against a malformed or hand-crafted stash file.
+fn parse_pam_stash(content: &str) -> (Option<String>, Option<String>) {
     let mut rhost = None;
     let mut service = None;
     for line in content.lines() {
         if let Some(v) = line.strip_prefix("PAM_RHOST=") {
-            rhost = Some(v.to_string());
-        }
-        if let Some(v) = line.strip_prefix("PAM_SERVICE=") {
-            service = Some(v.to_string());
+            rhost = clean_value(v);
+        } else if let Some(v) = line.strip_prefix("PAM_SERVICE=") {
+            service = clean_value(v);
         }
     }
     (rhost, service)
+}
+
+/// Accept a stash value only if it has no control/DEL bytes; otherwise drop it.
+fn clean_value(v: &str) -> Option<String> {
+    if v.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        None
+    } else {
+        Some(v.to_string())
+    }
 }
 
 fn read_proc_field(pid: i32, field: &str) -> Option<String> {
@@ -98,35 +117,30 @@ mod tests {
     }
 
     #[test]
-    fn read_pam_stash_parses_fields() {
-        let dir = std::env::temp_dir().join("epitropos-test-pam");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("pam.99999.env");
-        std::fs::write(
-            &path,
+    fn parse_pam_stash_parses_clean_fields() {
+        let (rhost, service) = parse_pam_stash(
             "PAM_RHOST=10.0.0.1\nPAM_SERVICE=sshd\nPAM_TTY=/dev/pts/0\nPAM_USER=alice\n",
-        )
-        .unwrap();
-
-        // We can't easily test via read_pam_stash(99999) because the
-        // path is hardcoded to /var/run/epitropos/. Instead test the
-        // parsing logic directly by reading the file ourselves.
-        let content = std::fs::read_to_string(&path).unwrap();
-        let mut rhost = None;
-        let mut service = None;
-        for line in content.lines() {
-            if let Some(v) = line.strip_prefix("PAM_RHOST=") {
-                rhost = Some(v.to_string());
-            }
-            if let Some(v) = line.strip_prefix("PAM_SERVICE=") {
-                service = Some(v.to_string());
-            }
-        }
+        );
         assert_eq!(rhost.as_deref(), Some("10.0.0.1"));
         assert_eq!(service.as_deref(), Some("sshd"));
+    }
 
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
+    #[test]
+    fn parse_pam_stash_rejects_control_chars_in_values() {
+        // A value carrying an escape/control sequence (attacker-influenced PAM
+        // item) must be dropped, not propagated into the recording header / UI.
+        let (rhost, service) =
+            parse_pam_stash("PAM_RHOST=1.2.3.4\x1b[31mINJECT\nPAM_SERVICE=sshd\n");
+        assert_eq!(rhost, None, "control-char rhost must be rejected");
+        assert_eq!(service.as_deref(), Some("sshd"));
+    }
+
+    #[test]
+    fn clean_value_accepts_normal_and_rejects_control() {
+        assert_eq!(clean_value("sshd").as_deref(), Some("sshd"));
+        assert_eq!(clean_value("host.example.com").as_deref(), Some("host.example.com"));
+        assert_eq!(clean_value("bad\x07bell"), None);
+        assert_eq!(clean_value("carriage\rreturn"), None);
     }
 
     #[test]

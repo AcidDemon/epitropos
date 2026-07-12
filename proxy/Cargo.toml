@@ -6,6 +6,7 @@ license.workspace = true
 description = "PTY-proxy for tamper-proof session recording via PAM"
 
 [dependencies]
+age = { version = "0.11", default-features = false }
 base64 = "0.22"
 inotify = "0.11"
 libc = "0.2"

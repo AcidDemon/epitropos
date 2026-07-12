@@ -2,7 +2,8 @@
 
 #![allow(dead_code)]
 
-use inotify::{Inotify, WatchMask};
+use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -18,16 +19,22 @@ pub fn watch_and_analyze(
     signing: &KeyPair,
 ) -> Result<(), SentinelError> {
     let mut inotify = Inotify::init().map_err(SentinelError::Io)?;
+    // CLOSE_WRITE: locally-finished files. MOVED_TO: the collector writes
+    // manifests via a tmp+rename (put_atomic), so the final .manifest.json
+    // arrives as IN_MOVED_TO — the previous CLOSE_WRITE|CREATE mask missed
+    // this, which is why live analysis never fired. CREATE|MOVED_TO also
+    // surface new subdirectories to watch and scan.
+    let mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::CREATE;
+    let mut wd_paths: HashMap<WatchDescriptor, PathBuf> = HashMap::new();
 
-    let watched = discover_dirs(&cfg.storage.dir)?;
-    for dir in &watched {
-        let _ = inotify
-            .watches()
-            .add(dir, WatchMask::CLOSE_WRITE | WatchMask::CREATE);
-    }
+    // Recursively watch the whole storage subtree. Failing to watch the root is
+    // fatal; an individual unwatchable subtree is logged and skipped (so a new
+    // sender/user directory created after startup still gets watched+analyzed,
+    // closing the previous "discovered once at startup" detection bypass).
+    watch_tree(&mut inotify, &cfg.storage.dir, mask, &mut wd_paths, true)?;
 
-    // Initial pass: analyze any recordings without events sidecars.
-    initial_pass(cfg, rules, age_identity, signing, &watched);
+    // Initial pass: analyze any existing recordings that lack a sidecar.
+    scan_tree(cfg, rules, age_identity, signing, &cfg.storage.dir);
 
     let mut buffer = [0; 4096];
     loop {
@@ -35,45 +42,90 @@ pub fn watch_and_analyze(
             .read_events_blocking(&mut buffer)
             .map_err(SentinelError::Io)?;
 
+        // Resolve each event to its originating directory via the watch
+        // descriptor (the previous code joined the name onto EVERY watched dir).
+        // Defer watch-adds and analysis until the event borrow ends.
+        let mut new_dirs: Vec<PathBuf> = Vec::new();
+        let mut manifests: Vec<PathBuf> = Vec::new();
         for ev in events {
-            if let Some(name) = ev.name {
-                let name_s = name.to_string_lossy();
-                if !name_s.ends_with(".manifest.json") {
-                    continue;
-                }
-                for dir in &watched {
-                    let candidate = dir.join(name_s.as_ref());
-                    if candidate.exists() {
-                        handle_manifest(cfg, rules, age_identity, signing, &candidate);
-                    }
-                }
+            let Some(dir) = wd_paths.get(&ev.wd).cloned() else {
+                continue;
+            };
+            let Some(name) = ev.name else { continue };
+            let child = dir.join(name.to_string_lossy().as_ref());
+            if ev.mask.contains(EventMask::ISDIR) {
+                new_dirs.push(child);
+            } else if name.to_string_lossy().ends_with(".manifest.json") {
+                manifests.push(child);
+            }
+        }
+        for d in new_dirs {
+            // Watch the new subtree BEFORE scanning it — add-before-scan closes
+            // the mkdir -> manifest-drop race.
+            let _ = watch_tree(&mut inotify, &d, mask, &mut wd_paths, false);
+            scan_tree(cfg, rules, age_identity, signing, &d);
+        }
+        for m in manifests {
+            if m.exists() {
+                handle_manifest(cfg, rules, age_identity, signing, &m);
             }
         }
     }
 }
 
-fn initial_pass(
-    cfg: &Config,
-    rules: &RuleSet,
-    identity: &str,
-    signing: &KeyPair,
-    watched: &[PathBuf],
-) {
-    for dir in watched {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if name.ends_with(".manifest.json") {
-                    let recording = strip_manifest_suffix(&path);
-                    let sidecar = engine::sidecar_path_for(&recording);
-                    if !sidecar.exists() {
-                        handle_manifest(cfg, rules, identity, signing, &path);
-                    }
-                }
+/// Recursively add an inotify watch to `dir` and every directory beneath it,
+/// recording each watch descriptor -> path. Re-watching a directory is
+/// idempotent (inotify returns the existing descriptor). A failure to watch a
+/// non-root dir is logged and skipped rather than silently swallowed.
+fn watch_tree(
+    inotify: &mut Inotify,
+    dir: &Path,
+    mask: WatchMask,
+    wd_paths: &mut HashMap<WatchDescriptor, PathBuf>,
+    fatal: bool,
+) -> Result<(), SentinelError> {
+    match inotify.watches().add(dir, mask) {
+        Ok(wd) => {
+            wd_paths.insert(wd, dir.to_path_buf());
+        }
+        Err(e) => {
+            eprintln!("epitropos-sentinel: cannot watch {}: {e}", dir.display());
+            if fatal {
+                return Err(SentinelError::Io(e));
+            }
+            return Ok(());
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let _ = watch_tree(inotify, &p, mask, wd_paths, false);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively analyze every recording under `dir` that has a manifest but no
+/// events sidecar yet.
+fn scan_tree(cfg: &Config, rules: &RuleSet, identity: &str, signing: &KeyPair, dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            scan_tree(cfg, rules, identity, signing, &p);
+        } else if p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".manifest.json"))
+        {
+            let recording = strip_manifest_suffix(&p);
+            let sidecar = engine::sidecar_path_for(&recording);
+            if !sidecar.exists() {
+                handle_manifest(cfg, rules, identity, signing, &p);
             }
         }
     }
@@ -85,29 +137,6 @@ fn strip_manifest_suffix(manifest_path: &Path) -> PathBuf {
         return PathBuf::from(stripped);
     }
     manifest_path.to_path_buf()
-}
-
-fn discover_dirs(storage_dir: &Path) -> Result<Vec<PathBuf>, SentinelError> {
-    let mut dirs = Vec::new();
-    let senders = storage_dir.join("senders");
-    if !senders.exists() {
-        return Ok(dirs);
-    }
-    if let Ok(entries) = std::fs::read_dir(&senders) {
-        for entry in entries.flatten() {
-            let recs = entry.path().join("recordings");
-            if recs.exists()
-                && let Ok(user_dirs) = std::fs::read_dir(&recs)
-            {
-                for user_entry in user_dirs.flatten() {
-                    if user_entry.path().is_dir() {
-                        dirs.push(user_entry.path());
-                    }
-                }
-            }
-        }
-    }
-    Ok(dirs)
 }
 
 fn handle_manifest(

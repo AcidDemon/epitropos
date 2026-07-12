@@ -6,6 +6,7 @@ license = "MIT"
 description = "Live session viewer for epitropos recordings"
 
 [dependencies]
+age = { version = "0.11", default-features = false }
 base64 = "0.22"
 inotify = "0.11"
 libc = "0.2"

@@ -1,4 +1,3 @@
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 pub struct SessionInfo {
@@ -12,7 +11,7 @@ pub struct SessionInfo {
     pub path: PathBuf,
 }
 
-pub fn list_sessions(live_dir: &Path) -> Vec<SessionInfo> {
+pub fn list_sessions(live_dir: &Path, identity: &age::x25519::Identity) -> Vec<SessionInfo> {
     let entries = match std::fs::read_dir(live_dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),
@@ -20,10 +19,10 @@ pub fn list_sessions(live_dir: &Path) -> Vec<SessionInfo> {
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("kgv1") {
+        if path.extension().and_then(|e| e.to_str()) != Some("age") {
             continue;
         }
-        if let Some(info) = parse_header(&path) {
+        if let Some(info) = parse_header(&path, identity) {
             sessions.push(info);
         }
     }
@@ -35,11 +34,11 @@ pub fn list_sessions(live_dir: &Path) -> Vec<SessionInfo> {
     sessions
 }
 
-fn parse_header(path: &Path) -> Option<SessionInfo> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = std::io::BufReader::new(file);
-    let first_line = reader.lines().next()?.ok()?;
-    let v: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+fn parse_header(path: &Path, identity: &age::x25519::Identity) -> Option<SessionInfo> {
+    // The header is the first encrypted frame; decrypt just that.
+    let plain = crate::stream::decrypt_first_frame(path, identity)?;
+    let line = std::str::from_utf8(&plain).ok()?;
+    let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
     if v["kind"].as_str() != Some("header") {
         return None;
     }
@@ -62,24 +61,44 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_session(dir: &Path, session_id: &str, user: &str) -> PathBuf {
-        let path = dir.join(format!("{session_id}.kgv1"));
+    fn frame(rec: &[u8], recipient: &age::x25519::Recipient) -> Vec<u8> {
+        let enc =
+            age::Encryptor::with_recipients(std::iter::once(recipient as &dyn age::Recipient))
+                .unwrap();
+        let mut blob = Vec::new();
+        let mut w = enc.wrap_output(&mut blob).unwrap();
+        w.write_all(rec).unwrap();
+        w.finish().unwrap();
+        let mut f = (blob.len() as u32).to_le_bytes().to_vec();
+        f.extend_from_slice(&blob);
+        f
+    }
+
+    fn write_session(
+        dir: &Path,
+        session_id: &str,
+        user: &str,
+        recipient: &age::x25519::Recipient,
+    ) -> PathBuf {
+        let path = dir.join(format!("{session_id}.age"));
+        let header = format!(
+            r#"{{"kind":"header","v":"katagrapho-v1","session_id":"{session_id}","user":"{user}","host":"testhost","started":1700000000.0,"cols":80,"rows":24}}"#
+        );
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(
-            f,
-            r#"{{"kind":"header","v":"katagrapho-v1","session_id":"{session_id}","user":"{user}","host":"testhost","boot_id":"b","part":0,"prev_manifest_hash_link":null,"started":1700000000.0,"cols":80,"rows":24,"shell":"/bin/bash","epitropos_version":"0.1.0","epitropos_commit":"abc","katagrapho_version":"0","katagrapho_commit":"0","audit_session_id":null,"ppid":1,"ssh_client":null,"ssh_connection":null,"ssh_original_command":null,"parent_comm":null,"parent_cmdline":null,"pam_rhost":null,"pam_service":null}}"#
-        )
-        .unwrap();
-        writeln!(f, r#"{{"kind":"out","t":0.1,"b":"aGk="}}"#).unwrap();
+        f.write_all(&frame(header.as_bytes(), recipient)).unwrap();
+        f.write_all(&frame(br#"{"kind":"out","t":0.1,"b":"aGk="}"#, recipient))
+            .unwrap();
         path
     }
 
     #[test]
     fn list_finds_sessions_in_directory() {
+        let id = age::x25519::Identity::generate();
+        let recip = id.to_public();
         let dir = tempfile::tempdir().unwrap();
-        write_session(dir.path(), "sess-aaa", "alice");
-        write_session(dir.path(), "sess-bbb", "bob");
-        let sessions = list_sessions(dir.path());
+        write_session(dir.path(), "sess-aaa", "alice", &recip);
+        write_session(dir.path(), "sess-bbb", "bob", &recip);
+        let sessions = list_sessions(dir.path(), &id);
         assert_eq!(sessions.len(), 2);
         let users: Vec<&str> = sessions.iter().map(|s| s.user.as_str()).collect();
         assert!(users.contains(&"alice"));
@@ -87,31 +106,49 @@ mod tests {
     }
 
     #[test]
-    fn list_skips_non_kgv1_files() {
+    fn list_skips_non_age_files() {
+        let id = age::x25519::Identity::generate();
+        let recip = id.to_public();
         let dir = tempfile::tempdir().unwrap();
-        write_session(dir.path(), "sess-ccc", "carol");
+        write_session(dir.path(), "sess-ccc", "carol", &recip);
         std::fs::write(dir.path().join("junk.txt"), "not a session").unwrap();
-        let sessions = list_sessions(dir.path());
+        let sessions = list_sessions(dir.path(), &id);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "sess-ccc");
     }
 
     #[test]
     fn list_returns_empty_for_missing_dir() {
-        let sessions = list_sessions(Path::new("/nonexistent/dir"));
+        let id = age::x25519::Identity::generate();
+        let sessions = list_sessions(Path::new("/nonexistent/dir"), &id);
         assert!(sessions.is_empty());
     }
 
     #[test]
     fn parse_header_extracts_metadata() {
+        let id = age::x25519::Identity::generate();
+        let recip = id.to_public();
         let dir = tempfile::tempdir().unwrap();
-        let path = write_session(dir.path(), "sess-ddd", "dave");
-        let info = parse_header(&path).unwrap();
+        let path = write_session(dir.path(), "sess-ddd", "dave", &recip);
+        let info = parse_header(&path, &id).unwrap();
         assert_eq!(info.session_id, "sess-ddd");
         assert_eq!(info.user, "dave");
         assert_eq!(info.host, "testhost");
         assert_eq!(info.cols, 80);
         assert_eq!(info.rows, 24);
         assert!(info.started > 0.0);
+    }
+
+    #[test]
+    fn parse_header_fails_with_wrong_identity() {
+        let id = age::x25519::Identity::generate();
+        let recip = id.to_public();
+        let wrong = age::x25519::Identity::generate();
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_session(dir.path(), "s", "u", &recip);
+        assert!(
+            parse_header(&path, &wrong).is_none(),
+            "a wrong identity must not decrypt session metadata"
+        );
     }
 }

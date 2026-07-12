@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,45 @@ impl EnrollmentDir {
         }
         Ok(())
     }
+
+    /// Acquire an exclusive advisory lock over the enrollment directory. Held
+    /// across validate -> burn -> write so a single-use token cannot be
+    /// consumed by two concurrent enroll requests (each would otherwise pass
+    /// validation before either burns).
+    pub fn lock_exclusive(&self) -> Result<EnrollLock, CollectorError> {
+        self.ensure_created()?;
+        if let Some(parent) = self.lock.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| CollectorError::Enroll(format!("mkdir lock dir: {e}")))?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&self.lock)
+            .map_err(|e| CollectorError::Enroll(format!("open lock: {e}")))?;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            return Err(CollectorError::Enroll(format!(
+                "flock: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(EnrollLock { _file: file })
+    }
+}
+
+/// RAII guard for the enrollment lock; releases the flock on drop.
+pub struct EnrollLock {
+    _file: fs::File,
+}
+
+impl Drop for EnrollLock {
+    fn drop(&mut self) {
+        unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 fn now_secs() -> u64 {
@@ -48,14 +88,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Fill `buf` with kernel randomness. Reads exactly `buf.len()` bytes from
+/// /dev/urandom — a bounded `read_exact`, never `fs::read` (the device has no
+/// EOF, so reading the whole file loops forever allocating).
+fn fill_random(buf: &mut [u8]) -> Result<(), CollectorError> {
+    use std::io::Read;
+    let mut f = fs::File::open("/dev/urandom")
+        .map_err(|e| CollectorError::Enroll(format!("open urandom: {e}")))?;
+    f.read_exact(buf)
+        .map_err(|e| CollectorError::Enroll(format!("read urandom: {e}")))?;
+    Ok(())
+}
+
 fn random_nonce() -> Result<[u8; 16], CollectorError> {
-    let bytes = fs::read("/dev/urandom")
-        .map_err(|e| CollectorError::Enroll(format!("urandom: {e}")))?;
-    if bytes.len() < 16 {
-        return Err(CollectorError::Enroll("urandom < 16 bytes".into()));
-    }
     let mut buf = [0u8; 16];
-    buf.copy_from_slice(&bytes[..16]);
+    fill_random(&mut buf)?;
     Ok(buf)
 }
 
@@ -69,11 +116,8 @@ pub fn load_secret(path: &Path) -> Result<Vec<u8>, CollectorError> {
 }
 
 pub fn generate_secret(path: &Path) -> Result<(), CollectorError> {
-    let bytes = fs::read("/dev/urandom")
-        .map_err(|e| CollectorError::Enroll(format!("urandom: {e}")))?;
-    if bytes.len() < 32 {
-        return Err(CollectorError::Enroll("urandom < 32 bytes".into()));
-    }
+    let mut bytes = [0u8; 32];
+    fill_random(&mut bytes)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| CollectorError::Enroll(format!("mkdir: {e}")))?;

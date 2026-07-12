@@ -5,10 +5,12 @@
 //!   push [--once]
 //!   status
 
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const STATE_DIR: &str = "/var/lib/epitropos-forward";
 const DEFAULT_HEAD_LOG: &str = "/var/lib/katagrapho/head.hash.log";
@@ -76,6 +78,109 @@ fn find_flag(args: &[String], flag: &str) -> Option<String> {
 // Enroll
 // ---------------------------------------------------------------------------
 
+// --- mTLS client ---
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+/// Pins the collector's (self-signed) server cert by SHA-256 fingerprint,
+/// matching the enrollment `--expect-fingerprint` trust model.
+#[derive(Debug)]
+struct PinnedServerVerifier {
+    expected_fp: String,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let fp = sha256_hex(end_entity.as_ref());
+        if fp.eq_ignore_ascii_case(&self.expected_fp) {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(format!(
+                "collector cert fingerprint mismatch (expected {}, got {fp})",
+                self.expected_fp
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Build a ureq agent that pins the collector cert to `expected_collector_fp`
+/// (hex SHA-256) and presents this sender's client cert (mTLS), for both enroll
+/// and push.
+fn build_agent(expected_collector_fp: &str) -> Result<ureq::Agent, String> {
+    let cert_pem =
+        fs::read(PathBuf::from(STATE_DIR).join("cert.pem")).map_err(|e| format!("read cert: {e}"))?;
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse cert: {e}"))?;
+    let key_pem =
+        fs::read(PathBuf::from(STATE_DIR).join("key.pem")).map_err(|e| format!("read key: {e}"))?;
+    let key = rustls_pemfile::private_key(&mut &key_pem[..])
+        .map_err(|e| format!("parse key: {e}"))?
+        .ok_or("no private key in key.pem")?;
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(PinnedServerVerifier {
+        expected_fp: expected_collector_fp.to_lowercase(),
+        provider: provider.clone(),
+    });
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("tls versions: {e}"))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(certs, key)
+        .map_err(|e| format!("client auth cert: {e}"))?;
+    Ok(ureq::AgentBuilder::new()
+        .tls_config(Arc::new(config))
+        .build())
+}
+
 fn cmd_enroll(args: &[String]) -> Result<(), String> {
     let collector =
         find_flag(args, "--collector").ok_or("--collector <addr:port> required")?;
@@ -111,6 +216,10 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
         .trim()
         .to_string();
 
+    let expect_fp_clean = expect_fp
+        .strip_prefix("SHA256:")
+        .unwrap_or(&expect_fp)
+        .to_string();
     let url = format!("https://{collector}/v1/enroll");
     eprintln!("Connecting to {url}...");
 
@@ -121,7 +230,11 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
         "signing_pub_hex": hex::encode(&signing_pub),
     });
 
-    let resp = ureq::post(&url)
+    // mTLS: pin the collector cert to the expected fingerprint and present our
+    // client cert (the collector binds it as proof of possession).
+    let agent = build_agent(&expect_fp_clean)?;
+    let resp = agent
+        .post(&url)
         .send_json(&body)
         .map_err(|e| format!("POST enroll: {e}"))?;
 
@@ -138,8 +251,7 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
     let collector_fp = resp_json["collector_fingerprint_sha256"]
         .as_str()
         .unwrap_or("");
-    let expect_fp_clean = expect_fp.strip_prefix("SHA256:").unwrap_or(&expect_fp);
-    if collector_fp != expect_fp_clean {
+    if collector_fp != expect_fp_clean.as_str() {
         return Err(format!(
             "fingerprint mismatch! expected {expect_fp_clean}, got {collector_fp}"
         ));
@@ -241,6 +353,17 @@ fn cmd_push(_args: &[String]) -> Result<(), String> {
         .trim()
         .to_string();
 
+    // Pin the collector cert saved at enrollment and present our client cert.
+    let collector_pem = fs::read(PathBuf::from(STATE_DIR).join("collector.pem"))
+        .map_err(|e| format!("read collector.pem: {e}"))?;
+    let collector_certs: Vec<_> = rustls_pemfile::certs(&mut &collector_pem[..])
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("parse collector.pem: {e}"))?;
+    let collector_der = collector_certs
+        .first()
+        .ok_or("collector.pem contains no certificate")?;
+    let agent = build_agent(&sha256_hex(collector_der.as_ref()))?;
+
     let mut shipped = 0;
     for line in pending.iter().take(16) {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -272,7 +395,8 @@ fn cmd_push(_args: &[String]) -> Result<(), String> {
         let url = format!("https://{collector_addr}/v1/sessions/{session_id}/parts/{part}");
         eprintln!("Pushing {session_id} part {part}...");
 
-        match ureq::post(&url)
+        match agent
+            .post(&url)
             .set("Content-Type", "application/octet-stream")
             .send_bytes(&body)
         {
@@ -344,4 +468,42 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
     println!("Shipped: {shipped}");
     println!("Pending: {}", total.saturating_sub(shipped));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::client::danger::ServerCertVerifier;
+
+    #[test]
+    fn pinned_server_verifier_matches_only_expected_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("c.pem");
+        let key = dir.path().join("k.pem");
+        generate_self_signed(&cert, &key, "collector").unwrap();
+        let pem = fs::read(&cert).unwrap();
+        let certs: Vec<_> = rustls_pemfile::certs(&mut &pem[..])
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let der = &certs[0];
+        let fp = sha256_hex(der.as_ref());
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let sn = rustls::pki_types::ServerName::try_from("collector").unwrap();
+        let now = rustls::pki_types::UnixTime::now();
+
+        // Matching fingerprint -> accepted.
+        let good = PinnedServerVerifier {
+            expected_fp: fp,
+            provider: provider.clone(),
+        };
+        assert!(good.verify_server_cert(der, &[], &sn, &[], now).is_ok());
+
+        // Any other fingerprint -> rejected (a MITM's cert is refused).
+        let bad = PinnedServerVerifier {
+            expected_fp: "deadbeef".into(),
+            provider,
+        };
+        assert!(bad.verify_server_cert(der, &[], &sn, &[], now).is_err());
+    }
 }

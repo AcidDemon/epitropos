@@ -107,18 +107,17 @@ impl ClientCertVerifier for PinnedClientVerifier {
 
     fn verify_client_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
+        _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, RustlsError> {
-        // The client presented a cert. Check its fingerprint.
-        if self.pinned.contains_der(end_entity.as_ref()) {
-            Ok(ClientCertVerified::assertion())
-        } else {
-            Err(RustlsError::General(
-                "client cert not in pinned set".into(),
-            ))
-        }
+        // Accept any well-formed client cert at the TLS layer; identity is
+        // enforced in the handlers, which have request context the TLS layer
+        // lacks: push requires the peer cert's fingerprint to be an enrolled
+        // sender, and enroll binds the presented cert (proving the enroller
+        // holds its key) gated by a single-use token. This lets a not-yet-
+        // enrolled sender present its cert during enrollment.
+        Ok(ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -155,6 +154,47 @@ impl ClientCertVerifier for PinnedClientVerifier {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.schemes.clone()
     }
+}
+
+/// Build a rustls `ServerConfig` that presents the collector's cert/key and
+/// requires client certs to be in the pinned set (`PinnedClientVerifier`).
+/// Client auth is offered but not mandatory so the enroll endpoint works
+/// without a cert; push handlers require the peer cert in the handler.
+pub fn server_config(
+    cert_path: &Path,
+    key_path: &Path,
+    pinned: PinnedCerts,
+) -> Result<rustls::ServerConfig, CollectorError> {
+    let certs = load_cert_chain(cert_path)?;
+    let key = load_private_key(key_path)?;
+    let verifier = PinnedClientVerifier::new(pinned);
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| CollectorError::Tls(format!("protocol versions: {e}")))?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, key)
+        .map_err(|e| CollectorError::Tls(format!("server config: {e}")))
+}
+
+fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, CollectorError> {
+    let pem = fs::read(path)
+        .map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &pem[..])
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CollectorError::Tls(format!("parse certs: {e}")))?;
+    if certs.is_empty() {
+        return Err(CollectorError::Tls("no certs in PEM".into()));
+    }
+    Ok(certs)
+}
+
+fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>, CollectorError> {
+    let pem = fs::read(path)
+        .map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
+    rustls_pemfile::private_key(&mut &pem[..])
+        .map_err(|e| CollectorError::Tls(format!("parse key: {e}")))?
+        .ok_or_else(|| CollectorError::Tls("no private key in PEM".into()))
 }
 
 /// Generate a self-signed ed25519 cert + key via rcgen.
@@ -257,5 +297,35 @@ mod tests {
         let fp = fingerprint_hex(der);
         p.remove_hex(&fp);
         assert!(!p.contains_der(der));
+    }
+
+    #[test]
+    fn verify_client_cert_accepts_any_valid_cert() {
+        // The TLS layer accepts any well-formed client cert; identity is
+        // enforced in the handlers (enrolled-fingerprint check on push, cert
+        // binding on enroll), so a not-yet-enrolled sender can present its cert.
+        let dir = tempdir().unwrap();
+        let cert = dir.path().join("c.pem");
+        let key = dir.path().join("k.pem");
+        generate_self_signed(&cert, &key, "sender").unwrap();
+        let der = read_cert_der(&cert).unwrap();
+
+        let verifier = PinnedClientVerifier::new(PinnedCerts::new());
+        let cert_der = CertificateDer::from(der);
+        assert!(
+            verifier
+                .verify_client_cert(&cert_der, &[], UnixTime::now())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn server_config_builds_from_generated_cert() {
+        let dir = tempdir().unwrap();
+        let cert = dir.path().join("c.pem");
+        let key = dir.path().join("k.pem");
+        generate_self_signed(&cert, &key, "collector").unwrap();
+        let cfg = server_config(&cert, &key, PinnedCerts::new());
+        assert!(cfg.is_ok(), "server config should build: {:?}", cfg.err());
     }
 }

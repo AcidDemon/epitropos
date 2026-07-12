@@ -35,6 +35,14 @@ pub struct Listen {
     pub address: String,
     #[serde(default = "Listen::default_port")]
     pub port: u16,
+    /// Per-request timeout in seconds; a slow/stuck request is dropped so it
+    /// cannot tie up a worker indefinitely.
+    #[serde(default = "Listen::default_request_timeout")]
+    pub request_timeout_seconds: u64,
+    /// Maximum number of requests handled concurrently; excess requests queue,
+    /// bounding worker/memory use under load.
+    #[serde(default = "Listen::default_max_concurrency")]
+    pub max_concurrent_requests: usize,
 }
 
 impl Listen {
@@ -44,6 +52,12 @@ impl Listen {
     fn default_port() -> u16 {
         DEFAULT_LISTEN_PORT
     }
+    fn default_request_timeout() -> u64 {
+        60
+    }
+    fn default_max_concurrency() -> usize {
+        64
+    }
 }
 
 impl Default for Listen {
@@ -51,6 +65,8 @@ impl Default for Listen {
         Self {
             address: Self::default_address(),
             port: Self::default_port(),
+            request_timeout_seconds: Self::default_request_timeout(),
+            max_concurrent_requests: Self::default_max_concurrency(),
         }
     }
 }

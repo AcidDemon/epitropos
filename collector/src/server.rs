@@ -7,7 +7,7 @@ use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,12 @@ pub struct AppState {
     pub collector_cert_pem: Arc<String>,
     pub collector_fingerprint_hex: Arc<String>,
 }
+
+/// SHA-256 hex fingerprint of the mTLS peer (client) certificate for the
+/// current connection, or `None` if no client cert was presented. Injected as a
+/// per-connection request extension by the TLS accept loop.
+#[derive(Clone, Default)]
+pub struct PeerFingerprint(pub Option<String>);
 
 pub fn router(state: AppState) -> Router {
     // Read limits before `state` is moved into the router.
@@ -183,17 +189,19 @@ fn enroll_blocking(
 
 async fn push_handler(
     State(state): State<AppState>,
+    Extension(peer): Extension<PeerFingerprint>,
     AxumPath((session_id, part)): AxumPath<(String, u32)>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Run blocking filesystem + crypto ops in spawn_blocking.
-    tokio::task::spawn_blocking(move || push_blocking(state, session_id, part, body))
+    tokio::task::spawn_blocking(move || push_blocking(state, peer.0, session_id, part, body))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
 }
 
 fn push_blocking(
     state: AppState,
+    peer_fingerprint: Option<String>,
     session_id: String,
     part: u32,
     body: Bytes,
@@ -221,9 +229,16 @@ fn push_blocking(
         ));
     }
 
-    // Find the sender whose signing.pub verifies this manifest.
-    let sender_name = find_sender_for_manifest(&state.cfg.storage.dir, &manifest)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+    // Identify the sender from the authenticated mTLS client cert (already
+    // verified as pinned at the TLS layer). O(senders) directory reads with no
+    // crypto — this replaces trial-verifying the manifest against every
+    // enrolled key, which was an unauthenticated CPU-amplification DoS. The
+    // manifest must then still verify against THIS sender's signing key below,
+    // binding the transport identity to the signing identity.
+    let peer_fingerprint = peer_fingerprint
+        .ok_or((StatusCode::UNAUTHORIZED, "client certificate required".into()))?;
+    let sender_name = find_sender_by_fingerprint(&state.cfg.storage.dir, &peer_fingerprint)
+        .ok_or((StatusCode::UNAUTHORIZED, "client cert not enrolled".into()))?;
 
     // Load sender state.
     let sender = SenderDirs::under(&state.cfg.storage.dir, &sender_name)
@@ -324,30 +339,21 @@ fn push_blocking(
     })))
 }
 
-/// Walk senders/*/signing.pub and find which one verifies this manifest.
-/// O(senders) per request — acceptable for small fleets. Task 14
-/// replaces this with peer-cert identification from the TLS layer.
-fn find_sender_for_manifest(
-    storage_dir: &std::path::Path,
-    manifest: &verify::Manifest,
-) -> Result<String, String> {
+/// Resolve the enrolled sender whose pinned cert fingerprint equals `fp_hex`.
+/// Directory reads only, no crypto — the mTLS layer already authenticated the
+/// cert, so this is a plain identity lookup, not an attacker-triggerable
+/// signature loop.
+fn find_sender_by_fingerprint(storage_dir: &std::path::Path, fp_hex: &str) -> Option<String> {
     let senders_dir = storage_dir.join("senders");
-    let read = std::fs::read_dir(&senders_dir).map_err(|e| format!("read senders: {e}"))?;
-    for entry in read {
-        let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let pub_path = entry.path().join("signing.pub");
-        let bytes = match std::fs::read(&pub_path) {
-            Ok(b) if b.len() == 32 => b,
-            _ => continue,
-        };
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        if manifest.verify(&arr).is_ok() {
-            return Ok(name);
+    for entry in std::fs::read_dir(&senders_dir).ok()?.flatten() {
+        let fp_path = entry.path().join("cert.fingerprint");
+        if let Ok(stored) = std::fs::read_to_string(&fp_path)
+            && stored.trim() == fp_hex
+        {
+            return Some(entry.file_name().to_string_lossy().into_owned());
         }
     }
-    Err("no enrolled sender verifies this manifest".into())
+    None
 }
 
 fn sha256_file_hex(path: &std::path::Path) -> String {
@@ -406,6 +412,19 @@ mod tests {
         assert_eq!(code, StatusCode::UNAUTHORIZED, "reused token must be rejected");
     }
 
+    #[test]
+    fn find_sender_by_fingerprint_matches_enrolled_only() {
+        let dir = tempdir().unwrap();
+        let alice = dir.path().join("senders/alice");
+        std::fs::create_dir_all(&alice).unwrap();
+        std::fs::write(alice.join("cert.fingerprint"), "abc123\n").unwrap();
+        assert_eq!(
+            find_sender_by_fingerprint(dir.path(), "abc123").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(find_sender_by_fingerprint(dir.path(), "deadbeef"), None);
+    }
+
     #[tokio::test]
     async fn body_over_configured_limit_is_rejected() {
         use tower::ServiceExt;
@@ -413,7 +432,10 @@ mod tests {
         let mut cfg = Config::default();
         cfg.storage.dir = dir.path().to_path_buf();
         cfg.storage.max_upload_bytes = 50; // authoritative, not axum's 2 MiB default
-        let app = router(state_with(cfg, vec![0u8; 32]));
+        // The TLS loop injects the peer fingerprint per connection; supply one
+        // here so the request reaches the body-limit layer.
+        let app = router(state_with(cfg, vec![0u8; 32]))
+            .layer(Extension(PeerFingerprint(Some("testfp".into()))));
 
         let req = axum::http::Request::builder()
             .method("POST")

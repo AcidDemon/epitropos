@@ -178,7 +178,7 @@ fn run_revoke(sender_name: &str, force: bool) -> Result<(), CollectorError> {
 #[tokio::main]
 async fn run_serve_async(cfg: Config) -> Result<(), CollectorError> {
     let cert_path = cfg.tls_cert_path();
-    let _key_path = cfg.tls_key_path();
+    let key_path = cfg.tls_key_path();
     let secret = enroll::load_secret(&cfg.enroll_secret_path())?;
     let cert_pem = tls::read_cert_pem(&cert_path)?;
     let cert_der = tls::read_cert_der(&cert_path)?;
@@ -208,15 +208,60 @@ async fn run_serve_async(cfg: Config) -> Result<(), CollectorError> {
 
     let app = server::router(state);
     let addr = format!("{}:{}", cfg.listen.address, cfg.listen.port);
-    eprintln!("epitropos-collector: listening on {addr}");
+
+    // TLS: present the collector cert and require client certs to be in the
+    // pinned set. Unpinned/unknown certs are rejected during the handshake, so
+    // no HTTP is processed for them.
+    let server_conf = tls::server_config(&cert_path, &key_path, pinned)?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_conf));
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| CollectorError::Tls(format!("bind {addr}: {e}")))?;
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| CollectorError::Tls(format!("serve: {e}")))?;
-    Ok(())
+    eprintln!("epitropos-collector: listening on https://{addr}");
+
+    loop {
+        let (tcp, _peer) = match listener.accept().await {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("epitropos-collector: accept: {e}");
+                continue;
+            }
+        };
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move { serve_tls_conn(acceptor, tcp, app).await });
+    }
+}
+
+/// Complete the TLS handshake for one connection, extract the peer (client)
+/// cert fingerprint, and serve HTTP with that fingerprint injected into every
+/// request so the push handler can identify the sender. A failed handshake
+/// (e.g. an unpinned client cert) just drops the connection.
+async fn serve_tls_conn(
+    acceptor: tokio_rustls::TlsAcceptor,
+    tcp: tokio::net::TcpStream,
+    app: axum::Router,
+) {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let tls_stream = match acceptor.accept(tcp).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let peer_fp = {
+        let (_io, conn) = tls_stream.get_ref();
+        conn.peer_certificates()
+            .and_then(|certs| certs.first())
+            .map(|c| tls::fingerprint_hex(c.as_ref()))
+    };
+    let svc = tower::ServiceBuilder::new()
+        .layer(axum::Extension(server::PeerFingerprint(peer_fp)))
+        .service(app);
+    let hyper_svc = hyper_util::service::TowerToHyperService::new(svc);
+    let _ = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+        .serve_connection(TokioIo::new(tls_stream), hyper_svc)
+        .await;
 }
 
 fn run_serve(config_path: &Path) -> Result<(), CollectorError> {
@@ -229,8 +274,5 @@ fn run_serve(config_path: &Path) -> Result<(), CollectorError> {
         );
         Config::default()
     };
-    // NOTE: This runs without TLS for now. Task 14 adds the rustls
-    // TLS acceptor. The PinnedClientVerifier from tls.rs will be
-    // wired in there.
     run_serve_async(cfg)
 }

@@ -136,8 +136,11 @@ pub fn set_terminal_size(fd: RawFd, cols: u16, rows: u16) -> Result<(), String> 
     Ok(())
 }
 
-/// Close all file descriptors >= `min_fd` by enumerating `/proc/self/fd`.
-pub fn close_fds_above(min_fd: RawFd) {
+/// Close all file descriptors >= `min_fd` by enumerating `/proc/self/fd`,
+/// except `keep` if provided. `keep` lets a post-fork child preserve one fd
+/// (e.g. an exec-sync pipe write end) across the hygiene sweep that must
+/// survive until `execv`.
+pub fn close_fds_above(min_fd: RawFd, keep: Option<RawFd>) {
     let dir = match fs::read_dir("/proc/self/fd") {
         Ok(d) => d,
         Err(_) => return,
@@ -151,7 +154,7 @@ pub fn close_fds_above(min_fd: RawFd) {
             let s = name.to_str()?;
             s.parse::<RawFd>().ok()
         })
-        .filter(|&fd| fd >= min_fd)
+        .filter(|&fd| fd >= min_fd && Some(fd) != keep)
         .collect();
 
     for fd in fds {

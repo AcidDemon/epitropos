@@ -38,6 +38,7 @@ fn allowed_syscalls() -> Vec<u32> {
         44,  // sendto
         60,  // exit
         61,  // wait4
+        62,  // kill (teardown SIGKILL of the shell process group)
         72,  // fcntl
         73,  // flock (utmp cleanup)
         131, // sigaltstack
@@ -102,6 +103,7 @@ fn allowed_syscalls() -> Vec<u32> {
         113, // clock_gettime
         115, // clock_nanosleep
         94,  // exit_group
+        129, // kill (teardown SIGKILL of the shell process group)
         131, // tgkill
         56,  // openat
         79,  // newfstatat
@@ -276,14 +278,29 @@ mod tests {
             assert!(!syscalls.contains(&56), "clone should not be allowed");
             assert!(!syscalls.contains(&59), "execve should not be allowed");
             assert!(!syscalls.contains(&435), "clone3 should not be allowed");
-            assert!(!syscalls.contains(&62), "kill should not be allowed");
+            assert!(!syscalls.contains(&101), "ptrace should not be allowed");
         }
         #[cfg(target_arch = "aarch64")]
         {
             assert!(!syscalls.contains(&220), "clone should not be allowed");
             assert!(!syscalls.contains(&221), "execve should not be allowed");
             assert!(!syscalls.contains(&435), "clone3 should not be allowed");
-            assert!(!syscalls.contains(&129), "kill should not be allowed");
+            assert!(!syscalls.contains(&117), "ptrace should not be allowed");
         }
+    }
+
+    #[test]
+    fn kill_is_allowed_for_teardown() {
+        // The recording-failure teardown SIGKILLs the shell's process group
+        // (kill(-pgid, SIGKILL)) and pid. Without `kill` in the allowlist the
+        // teardown syscall is itself killed by seccomp, leaving an unrecorded
+        // shell alive — defeating the whole invariant. (The proxy is trusted;
+        // kill from ruid=user targets the user's own shell. tgkill is already
+        // allowed. This deliberately reverses the earlier exclusion.)
+        let syscalls = allowed_syscalls();
+        #[cfg(target_arch = "x86_64")]
+        assert!(syscalls.contains(&62), "kill (62) must be allowed for teardown");
+        #[cfg(target_arch = "aarch64")]
+        assert!(syscalls.contains(&129), "kill (129) must be allowed for teardown");
     }
 }

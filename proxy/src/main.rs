@@ -243,6 +243,33 @@ fn run() -> Result<(), EpitroposError> {
     // Shell resolution: argv0 symlink > config. Validate against allowlist.
     let real_shell = resolve_shell(&cfg, &user.username);
 
+    // Decide PID-namespace isolation up front, before spawning anything, so a
+    // hard deny costs nothing to unwind. Isolation missing is NOT a
+    // recording failure, so the recording fail-policy does not apply: a
+    // recorded-but-killable session still violates require_pid_isolation, so we
+    // deny unconditionally rather than routing through the open/closed policy.
+    let ns_exec: Option<&str> = match process::resolve_isolation(
+        std::path::Path::new(&cfg.general.ns_exec_path).exists(),
+        cfg.general.require_pid_isolation,
+    ) {
+        process::IsolationDecision::Use => Some(cfg.general.ns_exec_path.as_str()),
+        process::IsolationDecision::ProceedWithout => {
+            eprintln!(
+                "epitropos: ns-exec helper not found at {}, PID isolation DISABLED \
+                 (require_pid_isolation=false) — the recorded user can see/signal the recorder",
+                cfg.general.ns_exec_path
+            );
+            None
+        }
+        process::IsolationDecision::Deny => {
+            return Err(EpitroposError::Privilege(format!(
+                "PID isolation required but ns-exec helper unavailable at {}; \
+                 refusing to start an unisolated (killable) recording session",
+                cfg.general.ns_exec_path
+            )));
+        }
+    };
+
     let recipient = if cfg.encryption.enabled {
         Some(cfg.encryption.recipient_file.as_str())
     } else {
@@ -344,15 +371,6 @@ fn run() -> Result<(), EpitroposError> {
 
     let command = detect_command();
     let shell_env = env::build_shell_env(&session_id, &stashed_env);
-    let ns_exec = if std::path::Path::new(&cfg.general.ns_exec_path).exists() {
-        Some(cfg.general.ns_exec_path.as_str())
-    } else {
-        eprintln!(
-            "epitropos: ns_exec not found at {}, no PID isolation",
-            cfg.general.ns_exec_path
-        );
-        None
-    };
     let shell_pid = process::spawn_shell(
         slave_fd,
         &real_shell,
@@ -396,6 +414,9 @@ fn run() -> Result<(), EpitroposError> {
         rate_limit::RateLimiter::new(cfg.limit.rate, cfg.limit.burst, cfg.limit.action.clone());
     let latency = cfg.general.latency.unwrap_or(10);
     let mut write_buf = buffer::FlushBuffer::new(pipe_write, latency);
+    if let Some(max_bytes) = cfg.general.max_buffer_bytes {
+        write_buf.set_max_size(max_bytes as usize);
+    }
     let result = event_loop::run(
         &loop_cfg,
         &signal_state,

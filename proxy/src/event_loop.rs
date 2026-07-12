@@ -330,6 +330,22 @@ pub fn run(
                 }
             }
         }
+
+        // Recording has failed (katagrapho died, pipe/flush failure, or
+        // backpressure exhausted the buffer). The session must NOT continue
+        // unrecorded — break and let the teardown below kill the shell. This is
+        // the invariant the whole product rests on: no unrecorded activity.
+        if recording_failed {
+            break 'event_loop;
+        }
+    }
+
+    // If we broke out because recording failed (not a clean shell exit), the
+    // shell is still alive and would otherwise run unrecorded — SIGKILL it (and
+    // its group / PID namespace) so nothing survives, and so the blocking
+    // waitpid below returns promptly instead of hanging on a live shell.
+    if recording_failed && !shell_exited {
+        crate::process::terminate_shell(cfg.shell_pid);
     }
 
     // Blocking wait for shell if not yet reaped.

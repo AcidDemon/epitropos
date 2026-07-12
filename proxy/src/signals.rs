@@ -128,9 +128,16 @@ impl Drop for SignalState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // The SIG*_RECEIVED flags are process-global statics; these tests mutate
+    // them, so they must not run concurrently. Serialize on a shared lock
+    // (ignoring poisoning so one test's panic doesn't cascade into the other).
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn drain_returns_false_when_no_signals() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut fds: [RawFd; 2] = [-1, -1];
         unsafe { libc::pipe2(fds.as_mut_ptr(), O_NONBLOCK | O_CLOEXEC) };
 
@@ -156,6 +163,7 @@ mod tests {
 
     #[test]
     fn drain_returns_and_clears_set_flags() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut fds: [RawFd; 2] = [-1, -1];
         unsafe { libc::pipe2(fds.as_mut_ptr(), O_NONBLOCK | O_CLOEXEC) };
 

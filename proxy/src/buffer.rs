@@ -28,6 +28,12 @@ impl FlushBuffer {
         }
     }
 
+    /// Override the hard in-flight buffer cap (calibration knob). Floored
+    /// at `capacity` so it can never be set below a single flush window.
+    pub fn set_max_size(&mut self, max_size: usize) {
+        self.max_size = max_size.max(self.capacity);
+    }
+
     pub fn should_flush(&self) -> bool {
         !self.buf.is_empty() && self.last_flush.elapsed().as_secs() >= self.latency_secs
     }
@@ -51,9 +57,17 @@ impl FlushBuffer {
                 )
             };
             if n < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::EINTR) {
+                let errno = std::io::Error::last_os_error().raw_os_error();
+                if errno == Some(libc::EINTR) {
                     continue;
+                }
+                // Non-blocking write end full: katagrapho is stalled but alive.
+                // Keep the unwritten remainder buffered and return Ok — do NOT
+                // mark broken. Growth is bounded by `max_size` in `write()`,
+                // which trips the backpressure valve if the stall persists.
+                // (EAGAIN == EWOULDBLOCK on Linux.)
+                if errno == Some(libc::EAGAIN) {
+                    break;
                 }
                 self.buf.clear();
                 self.broken = true;
@@ -66,8 +80,14 @@ impl FlushBuffer {
             }
             offset += n as usize;
         }
-        self.buf.clear();
-        self.last_flush = Instant::now();
+        // Drop the written prefix; retain any unwritten remainder (EAGAIN case)
+        // so a stalled sink degrades to buffering rather than data loss.
+        if offset > 0 {
+            self.buf.drain(0..offset);
+        }
+        if self.buf.is_empty() {
+            self.last_flush = Instant::now();
+        }
         Ok(())
     }
 }
@@ -264,6 +284,70 @@ mod tests {
         assert!(result.is_err());
 
         unsafe { libc::close(fds[1]) };
+    }
+
+    // Helper: pipe with a non-blocking write end and an open-but-undrained
+    // read end — models a stalled-but-alive katagrapho.
+    fn stalled_pipe() -> [i32; 2] {
+        let mut fds = [0i32; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+        unsafe {
+            let fl = libc::fcntl(fds[1], libc::F_GETFL);
+            libc::fcntl(fds[1], libc::F_SETFL, fl | libc::O_NONBLOCK);
+        }
+        fds
+    }
+
+    #[test]
+    fn nonblocking_stall_buffers_instead_of_breaking() {
+        // A stalled-but-open katagrapho (pipe full, reader idle) must be
+        // tolerated by buffering — NOT treated as a broken pipe — until the
+        // hard max_size cap. Regression guard: previously the first
+        // EAGAIN cleared the buffer and marked `broken`, freezing/failing early.
+        let fds = stalled_pipe();
+        let mut buf = FlushBuffer::new(fds[1], 60);
+
+        // ~800 KiB: well past the 64 KiB kernel pipe, well below the 4 MiB cap.
+        let chunk = vec![b'x'; 4096];
+        for _ in 0..200 {
+            Write::write_all(&mut buf, &chunk).expect("stall must buffer, not error");
+        }
+        assert!(
+            !buf.is_broken(),
+            "a stall below max_size must keep buffering, not break the pipe"
+        );
+
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    #[test]
+    fn nonblocking_stall_breaks_at_max_size() {
+        // Past max_size with a permanently stalled pipe, the backpressure valve
+        // must trip (broken/Err) rather than buffer unboundedly or hang.
+        let fds = stalled_pipe();
+        let mut buf = FlushBuffer::new(fds[1], 60);
+
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut errored = false;
+        for _ in 0..128 {
+            // up to 8 MiB > 4 MiB cap
+            if Write::write_all(&mut buf, &chunk).is_err() {
+                errored = true;
+                break;
+            }
+        }
+        assert!(
+            errored && buf.is_broken(),
+            "the max_size backpressure valve must trip on a permanent stall"
+        );
+
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 
     #[test]

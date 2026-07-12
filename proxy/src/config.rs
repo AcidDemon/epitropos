@@ -185,14 +185,30 @@ pub struct General {
     pub katagrapho_path: String,
     #[serde(default = "General::default_ns_exec_path")]
     pub ns_exec_path: String,
+    /// Require PID-namespace isolation of the recorded shell. When true
+    /// (default) and the ns-exec helper is unavailable, the session is denied
+    /// rather than run unisolated — an unisolated session lets the recorded
+    /// user see and signal the recorder. Set false only on hosts that cannot
+    /// provide PID namespaces, accepting that trade-off.
+    #[serde(default = "General::default_require_pid_isolation")]
+    pub require_pid_isolation: bool,
     #[serde(default)]
     pub record_input: bool,
     pub latency: Option<u64>,
+    /// Hard cap on the in-flight write buffer before a persistent katagrapho
+    /// stall trips the backpressure valve (fails the recording rather than
+    /// freezing the session). Also the maximum in-flight data-loss window on
+    /// abrupt sink death — calibration knob. Defaults to 4 MiB when unset.
+    pub max_buffer_bytes: Option<u64>,
 }
 
 impl General {
     fn default_ns_exec_path() -> String {
         "/run/wrappers/bin/epitropos-ns-exec".to_string()
+    }
+
+    fn default_require_pid_isolation() -> bool {
+        true
     }
 }
 
@@ -351,6 +367,9 @@ default = "open"
             cfg.general.ns_exec_path,
             "/run/wrappers/bin/epitropos-ns-exec"
         );
+        // Security-critical default: PID isolation is required unless the
+        // operator explicitly opts out. Must not silently regress to false.
+        assert!(cfg.general.require_pid_isolation);
         assert!(!cfg.general.record_input);
 
         assert_eq!(cfg.shell.default, "/bin/sh");

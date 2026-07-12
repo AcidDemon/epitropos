@@ -150,12 +150,16 @@ impl Recorder {
         Ok(())
     }
 
-    /// Emit a trailing chunk unconditionally if any records have been
-    /// written since the last chunk boundary. Called at session end.
+    /// Session-end finalize: emit a trailing `chunk` record if any records have
+    /// been written since the last boundary, then flush the writer so the chunk
+    /// (its integrity seal) and any residual buffered records actually reach the
+    /// sink. Without the flush the trailing chunk sits in the buffer and is lost
+    /// when the pipe is closed.
     pub fn force_flush_chunk(&self, w: &mut dyn Write) -> Result<(), String> {
         if self.chunks.borrow().message_count() > 0 {
             self.emit_chunk(w)?;
         }
+        w.flush().map_err(|e| format!("flush at session end: {e}"))?;
         Ok(())
     }
 
@@ -217,6 +221,51 @@ mod tests {
             max_messages: u64::MAX,
             max_seconds: f64::MAX,
         }
+    }
+
+    #[test]
+    fn force_flush_chunk_delivers_trailing_chunk_to_sink() {
+        use crate::buffer::FlushBuffer;
+        // Session-end finalize must DELIVER the trailing chunk (its integrity
+        // seal) to the sink, not leave it buffered to be lost when the pipe is
+        // closed. Records here total well under the 64 KiB flush capacity,
+        // so nothing reaches the pipe unless finalize flushes.
+        let mut fds = [0i32; 2];
+        unsafe { libc::pipe(fds.as_mut_ptr()) };
+
+        let recorder = Recorder::new(test_meta(), test_cfg());
+        let mut buf = FlushBuffer::new(fds[1], 60);
+        recorder
+            .write_header(&mut buf, 80, 24, "/bin/sh", "xterm")
+            .unwrap();
+        recorder.write_output(&mut buf, b"hello world").unwrap();
+
+        // Exactly what main.rs does at session end, then closes the pipe.
+        recorder.force_flush_chunk(&mut buf).unwrap();
+        unsafe { libc::close(fds[1]) };
+
+        // Drain the pipe and confirm a `chunk` record actually arrived.
+        let mut out = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n =
+                unsafe { libc::read(fds[0], tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+            if n <= 0 {
+                break;
+            }
+            out.extend_from_slice(&tmp[..n as usize]);
+        }
+        unsafe { libc::close(fds[0]) };
+
+        let text = String::from_utf8_lossy(&out);
+        let has_chunk = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .any(|v| v["kind"] == "chunk");
+        assert!(
+            has_chunk,
+            "trailing chunk must reach the sink at session end; pipe contents:\n{text}"
+        );
     }
 
     #[test]

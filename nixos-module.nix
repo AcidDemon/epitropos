@@ -24,6 +24,7 @@ let
       katagrapho_path = "/run/wrappers/bin/katagrapho";
       record_input = cfg.recordInput;
       ns_exec_path = "/run/wrappers/bin/epitropos-ns-exec";
+      require_pid_isolation = cfg.requirePidIsolation;
     };
     shell = {
       default = cfg.shell.default;
@@ -151,6 +152,20 @@ in
       type = types.bool;
       default = false;
       description = "Whether to record terminal input in addition to output.";
+    };
+
+    requirePidIsolation = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Require PID-namespace isolation of the recorded shell. When true
+        (the default) and the epitropos-ns-exec helper is unavailable, a
+        session is denied rather than started unisolated — an unisolated
+        session lets the recorded user see and signal (kill) the recorder.
+        Set to false only on hosts that cannot provide PID namespaces,
+        accepting that the recorder becomes visible and killable from within
+        the session.
+      '';
     };
 
     noticeText = mkOption {

@@ -88,5 +88,44 @@ pkgs.testers.nixosTest {
 
     # Verify katagrapho-verify validates the sidecar signature
     server.succeed("katagrapho-verify /var/log/ssh-sessions/testuser/*.manifest.json")
+
+    # ------------------------------------------------------------------
+    # F1: recording failure kills the session (fail-closed), partial
+    # evidence preserved. This is the negative-path acceptance test whose
+    # absence let the fail-open bug ship. Requires /dev/kvm to run.
+    # ------------------------------------------------------------------
+    with subtest("recording failure tears down the session (F1)"):
+        # Background a recorded session: emit a marker, push >64 KiB so the
+        # marker is flushed to katagrapho/disk, then idle on `sleep`.
+        server.succeed(
+            "nohup ${ssh} 'echo MARKER-BEFORE-KILL; yes x | head -n 40000; "
+            "exec sleep 600' >/tmp/f1-sess.log 2>&1 &"
+        )
+
+        # In-progress recording exists and the recorded shell (now `sleep`) runs.
+        server.wait_until_succeeds("ls /var/log/ssh-sessions/testuser/*.cast.age", timeout=60)
+        server.wait_until_succeeds("pgrep -u testuser -x sleep", timeout=30)
+
+        # Kill katagrapho mid-session. SIGTERM lets it finalize partial evidence;
+        # the proxy sees the writer die and must fail closed.
+        server.succeed("kill -TERM $(pgrep -n -x katagrapho)")
+
+        # F1 core invariant: the recorded shell is killed (not left unrecorded)...
+        server.wait_until_fails("pgrep -u testuser -x sleep", timeout=30)
+        # ...and the proxy exits rather than bridging an unrecorded session.
+        server.wait_until_fails("pgrep -x epitropos", timeout=30)
+
+        # Operator-visible: the failure reason is journalled.
+        server.wait_until_succeeds(
+            "journalctl -b | grep -q 'reason=recording_failed'", timeout=30
+        )
+
+        # Partial evidence preserved: the newest recording decrypts and contains
+        # the pre-kill output. (Depends on katagrapho finalizing on SIGTERM.)
+        newest = server.succeed(
+            "ls -t /var/log/ssh-sessions/testuser/*.cast.age | head -n1"
+        ).strip()
+        server.succeed(f"age -d -i /etc/age/key.txt {newest} > /tmp/f1-partial.cast")
+        server.succeed("grep -q MARKER-BEFORE-KILL /tmp/f1-partial.cast")
   '';
 }

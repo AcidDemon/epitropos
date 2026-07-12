@@ -48,14 +48,21 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Fill `buf` with kernel randomness. Reads exactly `buf.len()` bytes from
+/// /dev/urandom — a bounded `read_exact`, never `fs::read` (the device has no
+/// EOF, so reading the whole file loops forever allocating).
+fn fill_random(buf: &mut [u8]) -> Result<(), CollectorError> {
+    use std::io::Read;
+    let mut f = fs::File::open("/dev/urandom")
+        .map_err(|e| CollectorError::Enroll(format!("open urandom: {e}")))?;
+    f.read_exact(buf)
+        .map_err(|e| CollectorError::Enroll(format!("read urandom: {e}")))?;
+    Ok(())
+}
+
 fn random_nonce() -> Result<[u8; 16], CollectorError> {
-    let bytes = fs::read("/dev/urandom")
-        .map_err(|e| CollectorError::Enroll(format!("urandom: {e}")))?;
-    if bytes.len() < 16 {
-        return Err(CollectorError::Enroll("urandom < 16 bytes".into()));
-    }
     let mut buf = [0u8; 16];
-    buf.copy_from_slice(&bytes[..16]);
+    fill_random(&mut buf)?;
     Ok(buf)
 }
 
@@ -69,11 +76,8 @@ pub fn load_secret(path: &Path) -> Result<Vec<u8>, CollectorError> {
 }
 
 pub fn generate_secret(path: &Path) -> Result<(), CollectorError> {
-    let bytes = fs::read("/dev/urandom")
-        .map_err(|e| CollectorError::Enroll(format!("urandom: {e}")))?;
-    if bytes.len() < 32 {
-        return Err(CollectorError::Enroll("urandom < 32 bytes".into()));
-    }
+    let mut bytes = [0u8; 32];
+    fill_random(&mut bytes)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| CollectorError::Enroll(format!("mkdir: {e}")))?;

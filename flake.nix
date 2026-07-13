@@ -136,12 +136,40 @@
             };
           }
         );
+
+      mkEpitroposAudit =
+        pkgs:
+        let
+          craneLib = mkCraneLib pkgs;
+          common = workspaceCommonArgs pkgs // {
+            pname = "epitropos-audit";
+            version = "0.1.0";
+          };
+          cargoArtifacts = craneLib.buildDepsOnly (
+            common // { doCheck = false; }
+          );
+        in
+        craneLib.buildPackage (
+          common
+          // {
+            inherit cargoArtifacts;
+            doCheck = false;
+            cargoExtraArgs = "-p epitropos-audit";
+            meta = {
+              description = "Authoritative privilege-event feed for epitropos recordings";
+              license = pkgs.lib.licenses.mit;
+              platforms = pkgs.lib.platforms.linux;
+              mainProgram = "epitropos-audit";
+            };
+          }
+        );
     in
     {
       packages = forAllSystems (system: rec {
         epitropos = mkEpitropos (pkgsFor system);
         epitropos-collector = mkEpitroposCollector (pkgsFor system);
         epitropos-live = mkEpitroposLive (pkgsFor system);
+        epitropos-audit = mkEpitroposAudit (pkgsFor system);
         default = epitropos;
       });
 
@@ -149,6 +177,7 @@
         default = self.nixosModules.epitropos;
         epitropos = import ./nixos-module.nix self;
         collector = import ./nixos-module-collector.nix self;
+        audit = import ./nixos-module-audit.nix self;
       };
 
       checks = forAllSystems (
@@ -184,6 +213,12 @@
           };
 
           vm-test = import ./tests/vm-proxy.nix {
+            inherit pkgs;
+            katagraphoFlake = katagrapho;
+            epitroposFlake = self;
+          };
+
+          vm-audit-test = import ./tests/vm-audit.nix {
             inherit pkgs;
             katagraphoFlake = katagrapho;
             epitroposFlake = self;

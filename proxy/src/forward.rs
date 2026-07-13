@@ -411,6 +411,31 @@ fn cmd_push(_args: &[String]) -> Result<(), String> {
             Err(e) => return Err(format!("push failed: {e}")),
         }
 
+        // Best-effort: ship the authoritative privilege-events sidecar if the
+        // epitropos-audit daemon has already produced it. Timing: it is produced
+        // on manifest arrival, so it usually exists by this tick. ponytail: no
+        // re-ship if it lands after this entry advances — robust backfill deferred.
+        let priv_path = recording_root.join(user).join(format!("{rec_name}.privileges.json"));
+        if priv_path.exists() {
+            match fs::read(&priv_path) {
+                Ok(priv_bytes) => {
+                    let purl = format!(
+                        "https://{collector_addr}/v1/sessions/{session_id}/parts/{part}/privileges"
+                    );
+                    match agent
+                        .post(&purl)
+                        .set("Content-Type", "application/json")
+                        .send_bytes(&priv_bytes)
+                    {
+                        Ok(r) if r.status() == 200 => eprintln!("  privileges OK"),
+                        Ok(r) => eprintln!("  privileges push HTTP {}", r.status()),
+                        Err(e) => eprintln!("  privileges push failed: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("  read privileges sidecar: {e}"),
+            }
+        }
+
         let tmp = last_shipped_path.with_extension("tmp");
         fs::write(&tmp, manifest_hash).map_err(|e| format!("write: {e}"))?;
         fs::rename(&tmp, &last_shipped_path).map_err(|e| format!("rename: {e}"))?;

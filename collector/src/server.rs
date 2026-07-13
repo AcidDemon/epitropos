@@ -48,6 +48,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{session_id}/parts/{part}",
             post(push_handler),
         )
+        .route(
+            "/v1/sessions/{session_id}/parts/{part}/privileges",
+            post(privileges_handler),
+        )
         // Bound resource use: cap the body (the configured max_upload_bytes is
         // now authoritative, replacing axum's silent 2 MiB default), drop
         // slow/stuck requests, and limit in-flight concurrency.
@@ -210,6 +214,69 @@ async fn push_handler(
     tokio::task::spawn_blocking(move || push_blocking(state, peer.0, session_id, part, body))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+// --- Privilege-events sidecar push (epitropos-audit) ---
+//
+// Separate, backward-compatible endpoint: ships the authoritative
+// `<recording>.privileges.json` sidecar. Body = the raw sidecar JSON. The
+// recording must already be stored (the sidecar attaches to it). Bound to the
+// authenticated sender; the sidecar is itself ed25519-signed and offline-
+// verifiable (`epitropos-audit verify`).
+// ponytail: collector-side signature verification would need a 2nd pinned
+// pubkey at enrollment — deferred; the mTLS sender binding + offline verify hold.
+async fn privileges_handler(
+    State(state): State<AppState>,
+    Extension(peer): Extension<PeerFingerprint>,
+    AxumPath((session_id, part)): AxumPath<(String, u32)>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || privileges_blocking(state, peer.0, session_id, part, body))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+fn privileges_blocking(
+    state: AppState,
+    peer_fingerprint: Option<String>,
+    session_id: String,
+    part: u32,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let peer_fingerprint = peer_fingerprint
+        .ok_or((StatusCode::UNAUTHORIZED, "client certificate required".into()))?;
+    let sender_name = find_sender_by_fingerprint(&state.cfg.storage.dir, &peer_fingerprint)
+        .ok_or((StatusCode::UNAUTHORIZED, "client cert not enrolled".into()))?;
+    let sender = SenderDirs::under(&state.cfg.storage.dir, &sender_name)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    // The sidecar must describe the URL's session/part and be an audit sidecar.
+    let doc: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("parse privileges json: {e}")))?;
+    if doc.get("v").and_then(|v| v.as_str()) != Some("epitropos-audit-events-v1") {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "not an epitropos-audit sidecar".into()));
+    }
+    if doc.get("session_id").and_then(|v| v.as_str()) != Some(session_id.as_str())
+        || doc.get("part").and_then(|v| v.as_u64()) != Some(part as u64)
+    {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "session/part mismatch with URL".into()));
+    }
+
+    // Locate the already-stored recording (user isn't in the URL; scan the
+    // sender's users for the session/part file).
+    let rec_name = format!("{session_id}.part{part}.kgv1.age");
+    let rec_path = std::fs::read_dir(&sender.recordings)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join(&rec_name))
+        .find(|p| p.exists())
+        .ok_or((StatusCode::NOT_FOUND, "recording not stored yet".into()))?;
+
+    let priv_path = std::path::PathBuf::from(format!("{}.privileges.json", rec_path.display()));
+    storage::put_atomic(&priv_path, body.as_ref())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "stored": true })))
 }
 
 fn push_blocking(

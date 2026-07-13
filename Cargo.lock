@@ -490,6 +490,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "epitropos-audit"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "inotify",
+ "libc",
+ "rand",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "epitropos-collector"
 version = "0.1.0"
 dependencies = [

@@ -251,10 +251,25 @@ fn exec_sync_pipe() -> Result<(RawFd, RawFd), String> {
 /// Child side: signal to the parent that `execv` failed. Best-effort single
 /// byte, called immediately before `_exit` on the exec-failure path. `write`
 /// is async-signal-safe, so this is sound in the post-fork child.
-fn exec_sync_report_failure(write_fd: RawFd) {
-    let byte = [1u8];
-    unsafe {
-        libc::write(write_fd, byte.as_ptr() as *const libc::c_void, 1);
+fn exec_sync_report_failure(write_fd: RawFd, reason: &str) {
+    // Send the failure reason (which step + errno) so the parent can report why
+    // the child could not exec, instead of a bare "failed". `write` is
+    // async-signal-safe; `reason` is always non-empty so the parent never
+    // mistakes a written failure for the EOF that signals success.
+    let bytes = reason.as_bytes();
+    let mut off = 0;
+    while off < bytes.len() {
+        let n = unsafe {
+            libc::write(
+                write_fd,
+                bytes[off..].as_ptr() as *const libc::c_void,
+                bytes.len() - off,
+            )
+        };
+        if n <= 0 {
+            break;
+        }
+        off += n as usize;
     }
 }
 
@@ -263,9 +278,10 @@ fn exec_sync_report_failure(write_fd: RawFd) {
 /// caller MUST have already closed its own copy of the write end, or this never
 /// sees EOF.
 fn exec_sync_wait(read_fd: RawFd) -> Result<(), String> {
-    let mut byte = [0u8; 1];
+    let mut buf = [0u8; 512];
+    let mut msg: Vec<u8> = Vec::new();
     loop {
-        let n = unsafe { libc::read(read_fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n < 0 {
             let err = std::io::Error::last_os_error();
             if err.raw_os_error() == Some(libc::EINTR) {
@@ -274,9 +290,17 @@ fn exec_sync_wait(read_fd: RawFd) -> Result<(), String> {
             return Err(format!("exec-sync read failed: {err}"));
         }
         if n == 0 {
-            return Ok(()); // EOF: write end closed by a successful execv
+            break; // EOF
         }
-        return Err("child process failed to exec".to_string());
+        msg.extend_from_slice(&buf[..n as usize]);
+        if msg.len() >= 4096 {
+            break;
+        }
+    }
+    if msg.is_empty() {
+        Ok(()) // EOF with no message: a successful execv closed the pipe (O_CLOEXEC)
+    } else {
+        Err(format!("child process failed to exec: {}", String::from_utf8_lossy(&msg)))
     }
 }
 
@@ -341,7 +365,7 @@ pub fn spawn_katagrapho(
         }
         0 => unsafe {
             if libc::dup2(pipe_read, libc::STDIN_FILENO) < 0 {
-                exec_sync_report_failure(sync_write);
+                exec_sync_report_failure(sync_write, &format!("katagrapho dup2 stdin: {}", std::io::Error::last_os_error()));
                 libc::_exit(1);
             }
             // Close every inherited fd except stdin and the exec-sync write end
@@ -361,7 +385,7 @@ pub fn spawn_katagrapho(
             argv_ptrs.push(std::ptr::null());
             libc::execv(c_path.as_ptr(), argv_ptrs.as_ptr());
             // execv returned → it failed. Tell the parent, fail-closed.
-            exec_sync_report_failure(sync_write);
+            exec_sync_report_failure(sync_write, &format!("katagrapho execv: {}", std::io::Error::last_os_error()));
             libc::_exit(1);
         },
         child_pid => {
@@ -454,18 +478,18 @@ pub fn spawn_shell(
         }
         0 => unsafe {
             if libc::setsid() < 0 {
-                exec_sync_report_failure(sync_write);
+                exec_sync_report_failure(sync_write, &format!("setsid: {}", std::io::Error::last_os_error()));
                 libc::_exit(1);
             }
             if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
-                exec_sync_report_failure(sync_write);
+                exec_sync_report_failure(sync_write, &format!("TIOCSCTTY: {}", std::io::Error::last_os_error()));
                 libc::_exit(1);
             }
             if libc::dup2(slave_fd, 0) < 0
                 || libc::dup2(slave_fd, 1) < 0
                 || libc::dup2(slave_fd, 2) < 0
             {
-                exec_sync_report_failure(sync_write);
+                exec_sync_report_failure(sync_write, &format!("dup2 slave->stdio: {}", std::io::Error::last_os_error()));
                 libc::_exit(1);
             }
             if slave_fd > 2 {
@@ -476,8 +500,8 @@ pub fn spawn_shell(
             crate::pty::close_fds_above(3, Some(sync_write));
 
             // Irrevocably drop to the real user.
-            if drop_to_real_user().is_err() {
-                exec_sync_report_failure(sync_write);
+            if let Err(e) = drop_to_real_user() {
+                exec_sync_report_failure(sync_write, &e);
                 libc::_exit(1);
             }
 
@@ -516,7 +540,7 @@ pub fn spawn_shell(
                     // execv returned → ns_exec failed.
                 }
                 // ns_exec unusable or failed: do NOT direct-exec unisolated.
-                exec_sync_report_failure(sync_write);
+                exec_sync_report_failure(sync_write, &format!("ns_exec execv {ns_path}: {}", std::io::Error::last_os_error()));
                 libc::_exit(1);
             }
 
@@ -527,7 +551,7 @@ pub fn spawn_shell(
             }
             argv_ptrs.push(std::ptr::null());
             libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());
-            exec_sync_report_failure(sync_write);
+            exec_sync_report_failure(sync_write, &format!("execv shell: {}", std::io::Error::last_os_error()));
             libc::_exit(1);
         },
         child_pid => {

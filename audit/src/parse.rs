@@ -39,7 +39,12 @@ fn parse_line(line: &str) -> Option<Line> {
     scan_fields(line, &mut fields);
     let rtype = fields.get("type")?.clone();
     let (event_id, ts) = parse_event_id(line)?;
-    Some(Line { rtype, event_id, ts, fields })
+    Some(Line {
+        rtype,
+        event_id,
+        ts,
+        fields,
+    })
 }
 
 /// Extract `audit(1712500007.100:500)` → ("1712500007.100:500", 1712500007.1).
@@ -139,7 +144,9 @@ pub fn parse(text: &str) -> Vec<AuditEvent> {
     let mut groups: Vec<(String, Vec<Line>)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for raw in text.lines() {
-        let Some(line) = parse_line(raw) else { continue };
+        let Some(line) = parse_line(raw) else {
+            continue;
+        };
         match index.get(&line.event_id) {
             Some(&idx) => groups[idx].1.push(line),
             None => {
@@ -175,7 +182,11 @@ pub fn parse(text: &str) -> Vec<AuditEvent> {
         let has_syscall = types.iter().any(|t| t == "SYSCALL");
 
         let result = if has_syscall {
-            if fields.get("success").map(String::as_str) == Some("yes") { "success" } else { "denied" }
+            if fields.get("success").map(String::as_str) == Some("yes") {
+                "success"
+            } else {
+                "denied"
+            }
         } else if fields.get("res").map(String::as_str) == Some("success") {
             "success"
         } else {
@@ -214,10 +225,11 @@ fn normalize_tty(tty: Option<&String>) -> String {
         None => String::new(),
         Some(t) => {
             // auditd writes "pts0"; normalize to "pts/0"
-            if let Some(rest) = t.strip_prefix("pts") {
-                if rest.chars().all(|c| c.is_ascii_digit()) && !rest.is_empty() {
-                    return format!("pts/{rest}");
-                }
+            if let Some(rest) = t.strip_prefix("pts")
+                && !rest.is_empty()
+                && rest.chars().all(|c| c.is_ascii_digit())
+            {
+                return format!("pts/{rest}");
             }
             t.clone()
         }
@@ -237,7 +249,10 @@ type=USER_AUTH msg=audit(1712500009.000:510): pid=2100 uid=1000 auid=1000 ses=42
     #[test]
     fn parses_su_exec_with_command() {
         let events = parse(LOG);
-        let su = events.iter().find(|e| e.kind == "su" && e.result == "success").expect("su exec");
+        let su = events
+            .iter()
+            .find(|e| e.kind == "su" && e.result == "success")
+            .expect("su exec");
         assert_eq!(su.command, "su -");
         assert_eq!(su.euid, Some(0));
         assert_eq!(su.auid, Some(1000));
@@ -266,7 +281,10 @@ type=USER_AUTH msg=audit(1712500009.000:510): pid=2100 uid=1000 auid=1000 ses=42
     #[test]
     fn captures_denied_sudo_attempt() {
         let events = parse(LOG);
-        let denied = events.iter().find(|e| e.kind == "sudo").expect("denied sudo");
+        let denied = events
+            .iter()
+            .find(|e| e.kind == "sudo")
+            .expect("denied sudo");
         assert_eq!(denied.result, "denied");
         assert_eq!(denied.acct, "root");
     }
@@ -276,7 +294,11 @@ type=USER_AUTH msg=audit(1712500009.000:510): pid=2100 uid=1000 auid=1000 ses=42
         // the successful su USER_AUTH (499) must be dropped in favour of the SYSCALL exec
         let events = parse(LOG);
         let su_events: Vec<_> = events.iter().filter(|e| e.kind == "su").collect();
-        assert_eq!(su_events.len(), 1, "only the SYSCALL su exec, not the USER_AUTH dupe");
+        assert_eq!(
+            su_events.len(),
+            1,
+            "only the SYSCALL su exec, not the USER_AUTH dupe"
+        );
     }
 
     #[test]

@@ -473,7 +473,6 @@ dependencies = [
  "assert_cmd",
  "base64 0.22.1",
  "hex",
- "inotify",
  "libc",
  "predicates",
  "rcgen",

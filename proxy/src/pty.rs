@@ -140,10 +140,36 @@ pub fn set_terminal_size(fd: RawFd, cols: u16, rows: u16) -> Result<(), String> 
 /// except `keep` if provided. `keep` lets a post-fork child preserve one fd
 /// (e.g. an exec-sync pipe write end) across the hygiene sweep that must
 /// survive until `execv`.
-pub fn close_fds_above(min_fd: RawFd, keep: Option<RawFd>) {
+pub fn close_fds_above(min_fd: RawFd, keep: Option<RawFd>) -> Result<(), String> {
+    // close_range(2) needs no /proc and cannot partially succeed. When `keep`
+    // sits inside the range we close around it, in two calls.
+    let cr = |lo: u32, hi: u32| -> i64 {
+        if lo > hi {
+            return 0;
+        }
+        unsafe { libc::syscall(libc::SYS_close_range, lo, hi, 0u32) }
+    };
+    let lo = min_fd as u32;
+    let ok = match keep {
+        Some(k) if k >= min_fd => {
+            let k = k as u32;
+            let a = cr(lo, k.saturating_sub(1));
+            let b = if a == 0 { cr(k + 1, u32::MAX) } else { -1 };
+            a == 0 && b == 0
+        }
+        _ => cr(lo, u32::MAX) == 0,
+    };
+    if ok {
+        return Ok(());
+    }
+
+    // Fallback for kernels without close_range (< 5.9). A failure here is
+    // fatal, not ignorable: silently closing nothing would leave the recorded
+    // shell holding the katagrapho pipe write end and the PTY master, which is
+    // exactly the isolation this function exists to guarantee.
     let dir = match fs::read_dir("/proc/self/fd") {
         Ok(d) => d,
-        Err(_) => return,
+        Err(e) => return Err(format!("close_fds_above: /proc/self/fd: {e}")),
     };
     // Collect into a Vec first so we are not iterating the directory while
     // closing the fd that backs the directory stream.
@@ -162,4 +188,5 @@ pub fn close_fds_above(min_fd: RawFd, keep: Option<RawFd>) {
             libc::close(fd);
         }
     }
+    Ok(())
 }

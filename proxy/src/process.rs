@@ -192,22 +192,22 @@ pub fn terminate_shell(shell_pid: libc::pid_t) {
 }
 
 /// Drop the shell child back to the real user identity.
-/// Uses initgroups+setresgid+setresuid to irrevocably drop all privilege.
+/// Uses setresgid+setresuid to irrevocably drop all privilege.
 pub fn drop_to_real_user() -> Result<(), String> {
     let ruid = unsafe { libc::getuid() };
     let rgid = unsafe { libc::getgid() };
 
-    // Reset supplementary groups to match the real user.
-    let pw = unsafe { libc::getpwuid(ruid) };
-    if !pw.is_null() {
-        let username = unsafe { (*pw).pw_name };
-        if unsafe { libc::initgroups(username, rgid) } < 0 {
-            return Err(format!(
-                "initgroups failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
+    // No setgroups/initgroups here: both need CAP_SETGID, which this binary
+    // never has -- it is setuid to session-proxy, and verify_suid_context
+    // refuses to run as root -- so the call could only ever return EPERM.
+    //
+    // It is also unnecessary. sshd sets the supplementary list from the group
+    // DB before dropping to the user; execve's setuid/setgid bits change only
+    // euid, egid and the saved ids, never the supplementary list; and the NixOS
+    // security wrapper does not touch groups at all. The list is therefore
+    // already exactly what initgroups would recompute. tests/vm-proxy.nix
+    // asserts that the recorded shell does not inherit the wrapper's setgid
+    // group.
 
     if unsafe { libc::setresgid(rgid, rgid, rgid) } < 0 {
         return Err(format!(
@@ -300,7 +300,10 @@ fn exec_sync_wait(read_fd: RawFd) -> Result<(), String> {
     if msg.is_empty() {
         Ok(()) // EOF with no message: a successful execv closed the pipe (O_CLOEXEC)
     } else {
-        Err(format!("child process failed to exec: {}", String::from_utf8_lossy(&msg)))
+        Err(format!(
+            "child process failed to exec: {}",
+            String::from_utf8_lossy(&msg)
+        ))
     }
 }
 
@@ -365,12 +368,18 @@ pub fn spawn_katagrapho(
         }
         0 => unsafe {
             if libc::dup2(pipe_read, libc::STDIN_FILENO) < 0 {
-                exec_sync_report_failure(sync_write, &format!("katagrapho dup2 stdin: {}", std::io::Error::last_os_error()));
+                exec_sync_report_failure(
+                    sync_write,
+                    &format!("katagrapho dup2 stdin: {}", std::io::Error::last_os_error()),
+                );
                 libc::_exit(1);
             }
             // Close every inherited fd except stdin and the exec-sync write end
             // (which must survive until execv, then auto-closes via O_CLOEXEC).
-            crate::pty::close_fds_above(libc::STDIN_FILENO + 1, Some(sync_write));
+            if let Err(e) = crate::pty::close_fds_above(libc::STDIN_FILENO + 1, Some(sync_write)) {
+                exec_sync_report_failure(sync_write, &e);
+                libc::_exit(1);
+            }
             let arg_flag = CString::new("--session-id").unwrap();
             let mut argv_owned: Vec<&CStr> = vec![
                 c_path.as_c_str(),
@@ -385,7 +394,10 @@ pub fn spawn_katagrapho(
             argv_ptrs.push(std::ptr::null());
             libc::execv(c_path.as_ptr(), argv_ptrs.as_ptr());
             // execv returned → it failed. Tell the parent, fail-closed.
-            exec_sync_report_failure(sync_write, &format!("katagrapho execv: {}", std::io::Error::last_os_error()));
+            exec_sync_report_failure(
+                sync_write,
+                &format!("katagrapho execv: {}", std::io::Error::last_os_error()),
+            );
             libc::_exit(1);
         },
         child_pid => {
@@ -478,18 +490,27 @@ pub fn spawn_shell(
         }
         0 => unsafe {
             if libc::setsid() < 0 {
-                exec_sync_report_failure(sync_write, &format!("setsid: {}", std::io::Error::last_os_error()));
+                exec_sync_report_failure(
+                    sync_write,
+                    &format!("setsid: {}", std::io::Error::last_os_error()),
+                );
                 libc::_exit(1);
             }
             if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
-                exec_sync_report_failure(sync_write, &format!("TIOCSCTTY: {}", std::io::Error::last_os_error()));
+                exec_sync_report_failure(
+                    sync_write,
+                    &format!("TIOCSCTTY: {}", std::io::Error::last_os_error()),
+                );
                 libc::_exit(1);
             }
             if libc::dup2(slave_fd, 0) < 0
                 || libc::dup2(slave_fd, 1) < 0
                 || libc::dup2(slave_fd, 2) < 0
             {
-                exec_sync_report_failure(sync_write, &format!("dup2 slave->stdio: {}", std::io::Error::last_os_error()));
+                exec_sync_report_failure(
+                    sync_write,
+                    &format!("dup2 slave->stdio: {}", std::io::Error::last_os_error()),
+                );
                 libc::_exit(1);
             }
             if slave_fd > 2 {
@@ -497,7 +518,10 @@ pub fn spawn_shell(
             }
             // Keep the exec-sync write end across the fd sweep (auto-closes on
             // a successful execv via O_CLOEXEC).
-            crate::pty::close_fds_above(3, Some(sync_write));
+            if let Err(e) = crate::pty::close_fds_above(3, Some(sync_write)) {
+                exec_sync_report_failure(sync_write, &e);
+                libc::_exit(1);
+            }
 
             // Irrevocably drop to the real user.
             if let Err(e) = drop_to_real_user() {
@@ -540,7 +564,13 @@ pub fn spawn_shell(
                     // execv returned → ns_exec failed.
                 }
                 // ns_exec unusable or failed: do NOT direct-exec unisolated.
-                exec_sync_report_failure(sync_write, &format!("ns_exec execv {ns_path}: {}", std::io::Error::last_os_error()));
+                exec_sync_report_failure(
+                    sync_write,
+                    &format!(
+                        "ns_exec execv {ns_path}: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                );
                 libc::_exit(1);
             }
 
@@ -551,7 +581,10 @@ pub fn spawn_shell(
             }
             argv_ptrs.push(std::ptr::null());
             libc::execv(c_shell.as_ptr(), argv_ptrs.as_ptr());
-            exec_sync_report_failure(sync_write, &format!("execv shell: {}", std::io::Error::last_os_error()));
+            exec_sync_report_failure(
+                sync_write,
+                &format!("execv shell: {}", std::io::Error::last_os_error()),
+            );
             libc::_exit(1);
         },
         child_pid => {
@@ -630,8 +663,11 @@ mod exec_sync_tests {
         // A nonexistent katagrapho binary must be reported as an error
         // (fail-closed) — NOT a successful spawn whose child silently
         // execv-fails and _exit(1)s while the parent believes recording started.
-        let result =
-            spawn_katagrapho("/nonexistent/katagrapho-should-not-exist", "test-session", None);
+        let result = spawn_katagrapho(
+            "/nonexistent/katagrapho-should-not-exist",
+            "test-session",
+            None,
+        );
         assert!(
             result.is_err(),
             "expected Err for a missing katagrapho binary, got Ok (fail-open)"

@@ -131,8 +131,7 @@ impl ClientCertVerifier for PinnedClientVerifier {
             message,
             cert,
             dss,
-            &rustls::crypto::ring::default_provider()
-                .signature_verification_algorithms,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
         )
     }
 
@@ -146,8 +145,7 @@ impl ClientCertVerifier for PinnedClientVerifier {
             message,
             cert,
             dss,
-            &rustls::crypto::ring::default_provider()
-                .signature_verification_algorithms,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
         )
     }
 
@@ -178,8 +176,8 @@ pub fn server_config(
 }
 
 fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, CollectorError> {
-    let pem = fs::read(path)
-        .map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
+    let pem =
+        fs::read(path).map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut &pem[..])
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CollectorError::Tls(format!("parse certs: {e}")))?;
@@ -189,9 +187,11 @@ fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, Collecto
     Ok(certs)
 }
 
-fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>, CollectorError> {
-    let pem = fs::read(path)
-        .map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
+fn load_private_key(
+    path: &Path,
+) -> Result<rustls::pki_types::PrivateKeyDer<'static>, CollectorError> {
+    let pem =
+        fs::read(path).map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
     rustls_pemfile::private_key(&mut &pem[..])
         .map_err(|e| CollectorError::Tls(format!("parse key: {e}")))?
         .ok_or_else(|| CollectorError::Tls("no private key in PEM".into()))
@@ -239,15 +239,14 @@ fn write_pem(path: &Path, data: &[u8], mode: u32) -> Result<(), CollectorError> 
     f.sync_all()
         .map_err(|e| CollectorError::Tls(format!("fsync: {e}")))?;
     drop(f);
-    fs::rename(&tmp, path)
-        .map_err(|e| CollectorError::Tls(format!("rename: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| CollectorError::Tls(format!("rename: {e}")))?;
     Ok(())
 }
 
 /// Read a PEM cert file, return the first cert's DER bytes.
 pub fn read_cert_der(path: &Path) -> Result<Vec<u8>, CollectorError> {
-    let pem = fs::read(path)
-        .map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
+    let pem =
+        fs::read(path).map_err(|e| CollectorError::Tls(format!("read {}: {e}", path.display())))?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut &pem[..])
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CollectorError::Tls(format!("parse cert: {e}")))?;

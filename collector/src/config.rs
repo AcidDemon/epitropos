@@ -157,7 +157,6 @@ impl Default for Log {
     }
 }
 
-
 #[allow(dead_code)]
 impl Config {
     pub fn load(path: &Path) -> Result<Self, CollectorError> {

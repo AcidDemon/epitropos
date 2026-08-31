@@ -12,7 +12,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use crate::error::AuditError;
-use crate::signing::{verify_with_pub, KeyPair};
+use crate::signing::{KeyPair, verify_with_pub};
 
 pub const EVENTS_VERSION: &str = "epitropos-audit-events-v1";
 pub const GENESIS_PREV: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -263,7 +263,10 @@ mod tests {
         s.sign(&kp).unwrap();
         let path = dir.path().join("privileges.json");
         s.write_to(&path).unwrap();
-        PrivilegeEventsSidecar::load_from(&path).unwrap().verify(&kp.public_bytes()).unwrap();
+        PrivilegeEventsSidecar::load_from(&path)
+            .unwrap()
+            .verify(&kp.public_bytes())
+            .unwrap();
     }
 
     // Regression: full-precision runtime timestamps (e.g. the `t` subtraction)
@@ -284,6 +287,9 @@ mod tests {
         s.sign(&kp).unwrap();
         let path = dir.path().join("privileges.json");
         s.write_to(&path).unwrap();
-        PrivilegeEventsSidecar::load_from(&path).unwrap().verify(&kp.public_bytes()).unwrap();
+        PrivilegeEventsSidecar::load_from(&path)
+            .unwrap()
+            .verify(&kp.public_bytes())
+            .unwrap();
     }
 }

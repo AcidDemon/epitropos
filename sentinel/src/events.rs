@@ -13,8 +13,7 @@ use crate::error::SentinelError;
 use crate::signing::{KeyPair, verify_with_pub};
 
 pub const EVENTS_VERSION: &str = "epitropos-sentinel-events-v1";
-pub const GENESIS_PREV: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS_PREV: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -114,8 +113,7 @@ impl EventsSidecar {
         drop(f);
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o640))
             .map_err(|e| SentinelError::Events(format!("chmod: {e}")))?;
-        fs::rename(&tmp, path)
-            .map_err(|e| SentinelError::Events(format!("rename: {e}")))?;
+        fs::rename(&tmp, path).map_err(|e| SentinelError::Events(format!("rename: {e}")))?;
         Ok(())
     }
 
@@ -128,8 +126,7 @@ impl EventsSidecar {
 }
 
 fn base64_encode(input: &[u8]) -> String {
-    const ALPH: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0];
@@ -217,8 +214,7 @@ mod tests {
     #[test]
     fn sign_verify_round_trip() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let mut s = sample();
         s.sign(&kp).unwrap();
         s.verify(&kp.public_bytes()).unwrap();
@@ -227,8 +223,7 @@ mod tests {
     #[test]
     fn verify_rejects_tampered() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let mut s = sample();
         s.sign(&kp).unwrap();
         s.events[0].matched_text = "tampered".into();
@@ -238,8 +233,7 @@ mod tests {
     #[test]
     fn write_load_round_trip() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let mut s = sample();
         s.sign(&kp).unwrap();
         let path = dir.path().join("events.json");

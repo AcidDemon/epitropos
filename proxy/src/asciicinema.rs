@@ -159,7 +159,8 @@ impl Recorder {
         if self.chunks.borrow().message_count() > 0 {
             self.emit_chunk(w)?;
         }
-        w.flush().map_err(|e| format!("flush at session end: {e}"))?;
+        w.flush()
+            .map_err(|e| format!("flush at session end: {e}"))?;
         Ok(())
     }
 
@@ -248,8 +249,7 @@ mod tests {
         let mut out = Vec::new();
         let mut tmp = [0u8; 4096];
         loop {
-            let n =
-                unsafe { libc::read(fds[0], tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
+            let n = unsafe { libc::read(fds[0], tmp.as_mut_ptr() as *mut libc::c_void, tmp.len()) };
             if n <= 0 {
                 break;
             }

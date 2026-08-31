@@ -48,8 +48,8 @@ impl RuleSet {
         h.update(&bytes);
         let source_sha256 = hex::encode(h.finalize());
 
-        let s = std::str::from_utf8(&bytes)
-            .map_err(|e| SentinelError::Rules(format!("utf8: {e}")))?;
+        let s =
+            std::str::from_utf8(&bytes).map_err(|e| SentinelError::Rules(format!("utf8: {e}")))?;
         let parsed: RulesFile =
             toml::from_str(s).map_err(|e| SentinelError::Rules(format!("parse: {e}")))?;
 

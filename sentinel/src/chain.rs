@@ -23,10 +23,7 @@ pub struct ChainWalk {
 /// verified sidecar). A hash absent from `links` is a sidecar that was deleted
 /// or moved out of the tree — the chain is broken and a detection may have been
 /// erased. Pure + testable; the fs enumeration lives in the caller.
-pub fn walk_chain(
-    head: &str,
-    links: &HashMap<String, String>,
-) -> Result<ChainWalk, SentinelError> {
+pub fn walk_chain(head: &str, links: &HashMap<String, String>) -> Result<ChainWalk, SentinelError> {
     let mut current = head.to_string();
     let mut seen: HashSet<String> = HashSet::new();
     let mut n = 0usize;
@@ -70,8 +67,7 @@ pub struct ChainLock {
 impl ChainLock {
     pub fn acquire(paths: &ChainPaths) -> Result<Self, SentinelError> {
         if let Some(parent) = paths.lock.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| SentinelError::Chain(format!("mkdir: {e}")))?;
+            fs::create_dir_all(parent).map_err(|e| SentinelError::Chain(format!("mkdir: {e}")))?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -128,8 +124,7 @@ pub fn write_head(paths: &ChainPaths, hex: &str) -> Result<(), SentinelError> {
     f.sync_all()
         .map_err(|e| SentinelError::Chain(format!("fsync: {e}")))?;
     drop(f);
-    fs::rename(&tmp, &paths.head)
-        .map_err(|e| SentinelError::Chain(format!("rename: {e}")))?;
+    fs::rename(&tmp, &paths.head).map_err(|e| SentinelError::Chain(format!("rename: {e}")))?;
     Ok(())
 }
 

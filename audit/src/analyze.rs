@@ -34,7 +34,14 @@ pub fn run_once(
     let _lock = ChainLock::acquire(&chain_paths)?;
     let prev = chain::read_head(&chain_paths)?;
 
-    let mut sidecar = correlate(&manifest, &audit_events, VERSION, commit(), now_secs(), &prev)?;
+    let mut sidecar = correlate(
+        &manifest,
+        &audit_events,
+        VERSION,
+        commit(),
+        now_secs(),
+        &prev,
+    )?;
     sidecar.sign(key)?;
 
     let out = out.unwrap_or_else(|| default_out(manifest_path));

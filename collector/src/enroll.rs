@@ -107,8 +107,7 @@ fn random_nonce() -> Result<[u8; 16], CollectorError> {
 }
 
 pub fn load_secret(path: &Path) -> Result<Vec<u8>, CollectorError> {
-    let bytes = fs::read(path)
-        .map_err(|e| CollectorError::Enroll(format!("read secret: {e}")))?;
+    let bytes = fs::read(path).map_err(|e| CollectorError::Enroll(format!("read secret: {e}")))?;
     if bytes.len() < 32 {
         return Err(CollectorError::Enroll("secret < 32 bytes".into()));
     }
@@ -119,8 +118,7 @@ pub fn generate_secret(path: &Path) -> Result<(), CollectorError> {
     let mut bytes = [0u8; 32];
     fill_random(&mut bytes)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| CollectorError::Enroll(format!("mkdir: {e}")))?;
+        fs::create_dir_all(parent).map_err(|e| CollectorError::Enroll(format!("mkdir: {e}")))?;
     }
     let mut f = fs::OpenOptions::new()
         .create(true)
@@ -165,10 +163,7 @@ pub fn generate_token(
     body[..16].copy_from_slice(&mac);
     body[16..32].copy_from_slice(&nonce);
     body[32..].copy_from_slice(&expires_at.to_be_bytes());
-    let encoded = base32::encode(
-        base32::Alphabet::Rfc4648 { padding: false },
-        &body,
-    );
+    let encoded = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &body);
     let token = format!("{TOKEN_PREFIX}{encoded}");
 
     let mut hasher = Sha256::new();
@@ -270,8 +265,7 @@ pub fn validate_token(
 pub fn burn(dir: &EnrollmentDir, token_hash_hex: &str) -> Result<(), CollectorError> {
     dir.ensure_created()?;
     let burn_path = dir.burned.join(token_hash_hex);
-    fs::write(&burn_path, b"")
-        .map_err(|e| CollectorError::Enroll(format!("write burn: {e}")))?;
+    fs::write(&burn_path, b"").map_err(|e| CollectorError::Enroll(format!("write burn: {e}")))?;
     let _ = fs::remove_file(dir.pending.join(format!("{token_hash_hex}.json")));
     Ok(())
 }

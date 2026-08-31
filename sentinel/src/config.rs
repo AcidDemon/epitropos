@@ -210,7 +210,6 @@ impl Default for ChainCfg {
     }
 }
 
-
 impl Config {
     #[allow(dead_code)]
     pub fn load(path: &Path) -> Result<Self, SentinelError> {

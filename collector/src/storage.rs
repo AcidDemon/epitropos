@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CollectorError;
 
-const SAFE_CHARS: &str =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
+const SAFE_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
 
 pub fn is_safe_name(name: &str) -> bool {
     !name.is_empty()
@@ -108,8 +107,7 @@ pub fn put_atomic(path: &Path, data: &[u8]) -> Result<(), CollectorError> {
     // and needs deterministic modes regardless of the invoking umask.
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o640))
         .map_err(|e| CollectorError::Storage(format!("chmod: {e}")))?;
-    fs::rename(&tmp, path)
-        .map_err(|e| CollectorError::Storage(format!("rename: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| CollectorError::Storage(format!("rename: {e}")))?;
     Ok(())
 }
 

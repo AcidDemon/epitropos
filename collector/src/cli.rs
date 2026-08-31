@@ -7,13 +7,23 @@ use std::path::PathBuf;
 use crate::error::CollectorError;
 
 pub enum Command {
-    Serve { config_path: PathBuf },
-    Enroll { sender_name: String, ttl: Option<u64> },
-    Revoke { sender_name: String, force: bool },
+    Serve {
+        config_path: PathBuf,
+    },
+    Enroll {
+        sender_name: String,
+        ttl: Option<u64>,
+    },
+    Revoke {
+        sender_name: String,
+        force: bool,
+    },
     List,
     Keygen,
     RotateCert,
-    Verify { path: PathBuf },
+    Verify {
+        path: PathBuf,
+    },
     Version,
 }
 
@@ -63,7 +73,10 @@ pub fn parse(args: &[String]) -> Result<Command, CollectorError> {
             })
         }
         "--help" | "-h" | "help" => Err(CollectorError::Usage(usage())),
-        other => Err(CollectorError::Usage(format!("unknown subcommand: {other}\n{}", usage()))),
+        other => Err(CollectorError::Usage(format!(
+            "unknown subcommand: {other}\n{}",
+            usage()
+        ))),
     }
 }
 

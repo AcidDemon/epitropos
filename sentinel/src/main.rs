@@ -131,14 +131,19 @@ fn cmd_keygen(args: &[String]) -> Result<(), SentinelError> {
         .map_err(|e| SentinelError::Signing(format!("write: {e}")))?;
     writeln!(f, "# public key: {recipient}")
         .map_err(|e| SentinelError::Signing(format!("write: {e}")))?;
-    writeln!(f, "{identity_str}")
-        .map_err(|e| SentinelError::Signing(format!("write: {e}")))?;
+    writeln!(f, "{identity_str}").map_err(|e| SentinelError::Signing(format!("write: {e}")))?;
     drop(f);
 
     let kp = KeyPair::generate_to(&cfg.keys.signing_key, &cfg.keys.signing_pub)?;
 
-    eprintln!("Generated sentinel age identity: {}", cfg.keys.age_identity.display());
-    eprintln!("Generated sentinel signing keypair: {}", cfg.keys.signing_key.display());
+    eprintln!(
+        "Generated sentinel age identity: {}",
+        cfg.keys.age_identity.display()
+    );
+    eprintln!(
+        "Generated sentinel signing keypair: {}",
+        cfg.keys.signing_key.display()
+    );
     eprintln!();
     eprintln!("Age public key (add to katagrapho recipient file):");
     eprintln!("  {recipient}");
@@ -218,8 +223,8 @@ fn strip_manifest_suffix(p: &Path) -> PathBuf {
 fn read_manifest_header(path: &Path) -> Result<ManifestHeader, SentinelError> {
     let bytes = std::fs::read(path)
         .map_err(|e| SentinelError::Events(format!("read {}: {e}", path.display())))?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| SentinelError::Events(format!("parse: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| SentinelError::Events(format!("parse: {e}")))?;
     Ok(ManifestHeader {
         session_id: v["session_id"].as_str().unwrap_or("").to_string(),
         user: v["user"].as_str().unwrap_or("").to_string(),
@@ -281,7 +286,10 @@ fn cmd_verify_chain(args: &[String]) -> Result<(), SentinelError> {
                 }
             },
             Err(e) => {
-                eprintln!("epitropos-sentinel: unreadable sidecar {}: {e}", path.display());
+                eprintln!(
+                    "epitropos-sentinel: unreadable sidecar {}: {e}",
+                    path.display()
+                );
                 bad += 1;
             }
         }
@@ -343,19 +351,12 @@ fn cmd_serve(args: &[String]) -> Result<(), SentinelError> {
 
     let chain_paths = ChainPaths::new(cfg.chain.head_path.clone());
     if let Some(parent) = chain_paths.head.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| SentinelError::Chain(format!("mkdir: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| SentinelError::Chain(format!("mkdir: {e}")))?;
     }
     let _ = chain::read_head(&chain_paths)?;
 
-    eprintln!(
-        "epitropos-sentinel: watching {}",
-        cfg.storage.dir.display()
-    );
-    eprintln!(
-        "epitropos-sentinel: {} rules loaded",
-        rules.rules.len()
-    );
+    eprintln!("epitropos-sentinel: watching {}", cfg.storage.dir.display());
+    eprintln!("epitropos-sentinel: {} rules loaded", rules.rules.len());
     watcher::watch_and_analyze(&cfg, &rules, &identity, &signing)?;
     Ok(())
 }

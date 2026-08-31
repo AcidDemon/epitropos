@@ -158,10 +158,7 @@ fn handle_manifest(
     let header = match read_manifest_header(manifest_path) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!(
-                "epitropos-sentinel: skip {}: {e}",
-                manifest_path.display()
-            );
+            eprintln!("epitropos-sentinel: skip {}: {e}", manifest_path.display());
             return;
         }
     };
@@ -191,8 +188,8 @@ fn handle_manifest(
 fn read_manifest_header(path: &Path) -> Result<ManifestHeader, SentinelError> {
     let bytes = std::fs::read(path)
         .map_err(|e| SentinelError::Events(format!("read {}: {e}", path.display())))?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| SentinelError::Events(format!("parse: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| SentinelError::Events(format!("parse: {e}")))?;
     Ok(ManifestHeader {
         session_id: v["session_id"].as_str().unwrap_or("").to_string(),
         user: v["user"].as_str().unwrap_or("").to_string(),

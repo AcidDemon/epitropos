@@ -125,7 +125,10 @@ fn decrypt_blob(blob: &[u8], identity: &age::x25519::Identity) -> Option<Vec<u8>
 /// Read and decrypt just the first frame of a mirror file — the header record,
 /// which the proxy writes first. Used by `list` to show session metadata
 /// without streaming the whole session.
-pub(crate) fn decrypt_first_frame(path: &Path, identity: &age::x25519::Identity) -> Option<Vec<u8>> {
+pub(crate) fn decrypt_first_frame(
+    path: &Path,
+    identity: &age::x25519::Identity,
+) -> Option<Vec<u8>> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut len_buf = [0u8; 4];
     file.read_exact(&mut len_buf).ok()?;
@@ -212,9 +215,15 @@ mod tests {
         let identity = age::x25519::Identity::generate();
         let recip = identity.to_public().to_string();
         let mut carry = Vec::new();
-        carry.extend(frame_record(br#"{"kind":"out","t":0.1,"b":"aGk="}"#, &recip));
+        carry.extend(frame_record(
+            br#"{"kind":"out","t":0.1,"b":"aGk="}"#,
+            &recip,
+        ));
         carry.extend(frame_record(br#"{"kind":"in","t":0.2,"b":"eA=="}"#, &recip)); // ignored
-        carry.extend(frame_record(br#"{"kind":"out","t":0.3,"b":"d29ybGQ="}"#, &recip));
+        carry.extend(frame_record(
+            br#"{"kind":"out","t":0.3,"b":"d29ybGQ="}"#,
+            &recip,
+        ));
         let mut sink = Vec::new();
         let played = drain_frames(&mut carry, &identity, &mut sink);
         assert_eq!(played, 2, "only the two out records play");
@@ -232,7 +241,11 @@ mod tests {
         let mut sink = Vec::new();
         let played = drain_frames(&mut carry, &identity, &mut sink);
         assert_eq!(played, 0, "a partial frame is not played");
-        assert_eq!(carry.len(), full.len() - 3, "partial frame retained for later");
+        assert_eq!(
+            carry.len(),
+            full.len() - 3,
+            "partial frame retained for later"
+        );
     }
 
     #[test]
@@ -244,8 +257,11 @@ mod tests {
         {
             let mut f = std::fs::File::create(&path).unwrap();
             IoWrite::write_all(&mut f, &frame_record(br#"{"kind":"header"}"#, &recip)).unwrap();
-            IoWrite::write_all(&mut f, &frame_record(br#"{"kind":"out","t":0.1,"b":"aGk="}"#, &recip))
-                .unwrap();
+            IoWrite::write_all(
+                &mut f,
+                &frame_record(br#"{"kind":"out","t":0.1,"b":"aGk="}"#, &recip),
+            )
+            .unwrap();
         }
         let path_clone = path.clone();
         let recip_clone = recip.clone();

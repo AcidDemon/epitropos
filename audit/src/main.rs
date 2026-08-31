@@ -85,7 +85,13 @@ fn run() -> Result<(), AuditError> {
         "analyze" => {
             let [manifest, audit] = two(&o.positionals, "analyze <manifest.json> <audit-slice>")?;
             let key = KeyPair::load(&o.key, &o.pub_)?;
-            let sc = analyze::run_once(Path::new(&manifest), Path::new(&audit), &key, &o.head, o.out)?;
+            let sc = analyze::run_once(
+                Path::new(&manifest),
+                Path::new(&audit),
+                &key,
+                &o.head,
+                o.out,
+            )?;
             println!(
                 "epitropos-audit: wrote {} events (ses {}) — {}",
                 sc.events.len(),
@@ -110,10 +116,15 @@ fn run() -> Result<(), AuditError> {
                 .ok_or_else(|| AuditError::Usage("verify <privileges.json>".into()))?;
             let sidecar = PrivilegeEventsSidecar::load_from(Path::new(path))?;
             sidecar.verify(&read_pub(&o.pub_)?)?;
-            println!("epitropos-audit: ok — {} privilege events verified", sidecar.events.len());
+            println!(
+                "epitropos-audit: ok — {} privilege events verified",
+                sidecar.events.len()
+            );
             Ok(())
         }
-        "" => Err(AuditError::Usage("keygen | analyze | serve | verify".into())),
+        "" => Err(AuditError::Usage(
+            "keygen | analyze | serve | verify".into(),
+        )),
         other => Err(AuditError::Usage(format!("unknown command {other:?}"))),
     }
 }
@@ -121,7 +132,10 @@ fn run() -> Result<(), AuditError> {
 fn read_pub(path: &Path) -> Result<[u8; 32], AuditError> {
     let bytes = std::fs::read(path)?;
     bytes.as_slice().try_into().map_err(|_| {
-        AuditError::Verify(format!("{} is not a 32-byte ed25519 pubkey", path.display()))
+        AuditError::Verify(format!(
+            "{} is not a 32-byte ed25519 pubkey",
+            path.display()
+        ))
     })
 }
 

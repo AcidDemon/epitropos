@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::CollectorError;
 
-pub const GENESIS_PREV: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+pub const GENESIS_PREV: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[allow(dead_code)]
 pub struct SenderChain {
@@ -38,9 +37,8 @@ pub struct ChainLock {
 impl ChainLock {
     pub fn acquire(chain: &SenderChain) -> Result<Self, CollectorError> {
         if let Some(parent) = chain.lock.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                CollectorError::Chain(format!("mkdir {}: {e}", parent.display()))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| CollectorError::Chain(format!("mkdir {}: {e}", parent.display())))?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -86,9 +84,7 @@ pub fn read_head(chain: &SenderChain) -> Result<String, CollectorError> {
 #[allow(dead_code)]
 pub fn write_head(chain: &SenderChain, hex_hash: &str) -> Result<(), CollectorError> {
     if hex_hash.len() != 64 {
-        return Err(CollectorError::Chain(
-            "hash must be 64 hex chars".into(),
-        ));
+        return Err(CollectorError::Chain("hash must be 64 hex chars".into()));
     }
     let tmp = chain.head.with_extension("tmp");
     let mut f = OpenOptions::new()

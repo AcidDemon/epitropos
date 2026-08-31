@@ -67,7 +67,11 @@ pub fn session_end(
     let dur_display = if duration_secs < 60.0 {
         format!("{}s", duration_secs as u64)
     } else if duration_secs < 3600.0 {
-        format!("{}m{}s", duration_secs as u64 / 60, duration_secs as u64 % 60)
+        format!(
+            "{}m{}s",
+            duration_secs as u64 / 60,
+            duration_secs as u64 % 60
+        )
     } else {
         let h = duration_secs as u64 / 3600;
         let m = (duration_secs as u64 % 3600) / 60;

@@ -3,7 +3,9 @@
 //! Rejects unjoinable recordings (null audit_session_id or boot_id=="unknown").
 
 use crate::error::AuditError;
-use crate::events::{round_ms, PrivilegeEvent, PrivilegeEventsSidecar, EVENTS_VERSION, GENESIS_PREV};
+use crate::events::{
+    EVENTS_VERSION, GENESIS_PREV, PrivilegeEvent, PrivilegeEventsSidecar, round_ms,
+};
 use crate::manifest::Manifest;
 use crate::parse::AuditEvent;
 
@@ -56,7 +58,10 @@ pub fn correlate(
     // dedup identical markers (same rounded time + kind + command)
     events.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
     events.dedup_by(|a, b| {
-        (a.t - b.t).abs() < 0.5 && a.kind == b.kind && a.command == b.command && a.result == b.result
+        (a.t - b.t).abs() < 0.5
+            && a.kind == b.kind
+            && a.command == b.command
+            && a.result == b.result
     });
 
     Ok(PrivilegeEventsSidecar {

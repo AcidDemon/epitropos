@@ -27,7 +27,9 @@ pub fn walk_chain(head: &str, links: &HashMap<String, String>) -> Result<ChainWa
     let mut n = 0usize;
     while current != GENESIS_PREV {
         if !seen.insert(current.clone()) {
-            return Err(AuditError::Chain(format!("chain cycle detected at {current}")));
+            return Err(AuditError::Chain(format!(
+                "chain cycle detected at {current}"
+            )));
         }
         match links.get(&current) {
             Some(prev) => {
@@ -129,7 +131,10 @@ mod tests {
     use super::*;
 
     fn links(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(t, p)| (t.to_string(), p.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(t, p)| (t.to_string(), p.to_string()))
+            .collect()
     }
 
     #[test]

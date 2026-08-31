@@ -133,11 +133,7 @@ fn run_list() -> Result<(), CollectorError> {
             .unwrap_or_else(|_| "unknown".into());
         let head = std::fs::read_to_string(entry.path().join("head.hash"))
             .unwrap_or_else(|_| "(genesis)".into());
-        let head_short = if head.len() > 16 {
-            &head[..16]
-        } else {
-            &head
-        };
+        let head_short = if head.len() > 16 { &head[..16] } else { &head };
         println!("{:<25} {:<20} {}...", name, enrolled.trim(), head_short);
     }
     Ok(())
@@ -190,12 +186,12 @@ async fn run_serve_async(cfg: Config) -> Result<(), CollectorError> {
     if senders_dir.exists()
         && let Ok(read) = std::fs::read_dir(&senders_dir)
     {
-            for entry in read.flatten() {
-                let fp_file = entry.path().join("cert.fingerprint");
-                if let Ok(fp_hex) = std::fs::read_to_string(&fp_file) {
-                    pinned.add_hex(fp_hex.trim());
-                }
+        for entry in read.flatten() {
+            let fp_file = entry.path().join("cert.fingerprint");
+            if let Ok(fp_hex) = std::fs::read_to_string(&fp_file) {
+                pinned.add_hex(fp_hex.trim());
             }
+        }
     }
 
     let state = AppState {

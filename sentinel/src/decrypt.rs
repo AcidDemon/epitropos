@@ -15,11 +15,7 @@ pub struct KgvRecord {
     pub raw: serde_json::Value,
 }
 
-pub fn iterate_records<F>(
-    path: &Path,
-    identity_str: &str,
-    mut f: F,
-) -> Result<(), SentinelError>
+pub fn iterate_records<F>(path: &Path, identity_str: &str, mut f: F) -> Result<(), SentinelError>
 where
     F: FnMut(&KgvRecord) -> Result<(), SentinelError>,
 {
@@ -57,7 +53,12 @@ where
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
             _ => None,
         };
-        let rec = KgvRecord { kind, t, data, raw: v };
+        let rec = KgvRecord {
+            kind,
+            t,
+            data,
+            raw: v,
+        };
         f(&rec)?;
     }
     Ok(())

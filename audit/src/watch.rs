@@ -33,11 +33,15 @@ pub fn serve(cfg: &WatchConfig, key: &KeyPair) -> Result<(), AuditError> {
     eprintln!("epitropos-audit: watching {}", cfg.recordings_dir.display());
     let mut buffer = [0; 4096];
     loop {
-        let events = inotify.read_events_blocking(&mut buffer).map_err(AuditError::Io)?;
+        let events = inotify
+            .read_events_blocking(&mut buffer)
+            .map_err(AuditError::Io)?;
         let mut new_dirs: Vec<PathBuf> = Vec::new();
         let mut manifests: Vec<PathBuf> = Vec::new();
         for ev in events {
-            let Some(dir) = wd_paths.get(&ev.wd).cloned() else { continue };
+            let Some(dir) = wd_paths.get(&ev.wd).cloned() else {
+                continue;
+            };
             let Some(name) = ev.name else { continue };
             let child = dir.join(name.to_string_lossy().as_ref());
             if ev.mask.contains(EventMask::ISDIR) {
@@ -89,12 +93,18 @@ fn watch_tree(
 }
 
 fn scan_tree(cfg: &WatchConfig, key: &KeyPair, dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
             scan_tree(cfg, key, &p);
-        } else if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".manifest.json")) {
+        } else if p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".manifest.json"))
+        {
             handle_manifest(cfg, key, &p);
         }
     }
@@ -108,7 +118,8 @@ fn handle_manifest(cfg: &WatchConfig, key: &KeyPair, manifest_path: &Path) {
     match analyze::run_once(manifest_path, &cfg.audit_log, key, &cfg.chain_head, None) {
         Ok(sc) => eprintln!(
             "epitropos-audit: wrote sidecar for {} ({} events)",
-            sc.session_id, sc.events.len()
+            sc.session_id,
+            sc.events.len()
         ),
         // an unjoinable recording (null audit_session_id / boot_id) is expected
         // and not fatal — log at low volume and move on.

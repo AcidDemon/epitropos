@@ -9,7 +9,7 @@ use crate::chain::{self, ChainLock, ChainPaths};
 use crate::config::Config;
 use crate::decrypt::iterate_records;
 use crate::error::SentinelError;
-use crate::events::{EventRecord, EventsSidecar, EVENTS_VERSION};
+use crate::events::{EVENTS_VERSION, EventRecord, EventsSidecar};
 use crate::journal::{self, MatchEvent};
 use crate::rules::{RuleSet, SessionMatcher};
 use crate::signing::KeyPair;
@@ -56,32 +56,32 @@ pub fn analyze_recording(
         if (rec.kind == "out" || rec.kind == "in")
             && let Some(ref text) = rec.data
         {
-                let hits = matcher.feed(rec.t, text);
-                for h in hits {
-                    if ctx.emit_journal {
-                        journal::emit_match(&MatchEvent {
-                            rule_id: &h.rule_id,
-                            severity: &h.severity,
-                            category: &h.category,
-                            session_id: &manifest.session_id,
-                            part: manifest.part,
-                            user: &manifest.user,
-                            host: &manifest.host,
-                            t: h.session_time,
-                            matched_text: &h.matched_text,
-                        });
-                    }
-                    events.push(EventRecord {
+            let hits = matcher.feed(rec.t, text);
+            for h in hits {
+                if ctx.emit_journal {
+                    journal::emit_match(&MatchEvent {
+                        rule_id: &h.rule_id,
+                        severity: &h.severity,
+                        category: &h.category,
+                        session_id: &manifest.session_id,
+                        part: manifest.part,
+                        user: &manifest.user,
+                        host: &manifest.host,
                         t: h.session_time,
-                        rule_id: h.rule_id,
-                        severity: h.severity,
-                        category: h.category,
-                        description: h.description,
-                        matched_text: h.matched_text,
-                        context: h.context,
+                        matched_text: &h.matched_text,
                     });
                 }
+                events.push(EventRecord {
+                    t: h.session_time,
+                    rule_id: h.rule_id,
+                    severity: h.severity,
+                    category: h.category,
+                    description: h.description,
+                    matched_text: h.matched_text,
+                    context: h.context,
+                });
             }
+        }
         Ok(())
     })?;
 

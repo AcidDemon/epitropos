@@ -299,8 +299,14 @@ mod tests {
         // allowed. This deliberately reverses the earlier exclusion.)
         let syscalls = allowed_syscalls();
         #[cfg(target_arch = "x86_64")]
-        assert!(syscalls.contains(&62), "kill (62) must be allowed for teardown");
+        assert!(
+            syscalls.contains(&62),
+            "kill (62) must be allowed for teardown"
+        );
         #[cfg(target_arch = "aarch64")]
-        assert!(syscalls.contains(&129), "kill (129) must be allowed for teardown");
+        assert!(
+            syscalls.contains(&129),
+            "kill (129) must be allowed for teardown"
+        );
     }
 }

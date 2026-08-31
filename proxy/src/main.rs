@@ -353,8 +353,7 @@ fn run() -> Result<(), EpitroposError> {
         // (config validated non-empty when live is enabled). Live viewing is
         // best-effort — a bad/unreadable recipient logs and skips the mirror
         // without affecting the recording.
-        let live_path =
-            std::path::Path::new(&cfg.live.directory).join(format!("{session_id}.age"));
+        let live_path = std::path::Path::new(&cfg.live.directory).join(format!("{session_id}.age"));
         match std::fs::read_to_string(&cfg.live.recipient_file) {
             Ok(contents) => {
                 let recipient = contents
@@ -464,7 +463,11 @@ fn run() -> Result<(), EpitroposError> {
     utmp::remove_entry(&pty.slave_path, shell_pid);
     // _session_lock OwnedFd drops here, releasing the flock automatically.
 
-    let end_reason = if result.recording_failed { "recording_failed" } else { "eof" };
+    let end_reason = if result.recording_failed {
+        "recording_failed"
+    } else {
+        "eof"
+    };
     journal::session_end(
         &session_id,
         &user.username,

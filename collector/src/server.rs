@@ -3,11 +3,11 @@
 #![allow(dead_code)]
 
 use axum::{
+    Extension, Json, Router,
     body::Bytes,
     extract::{Path as AxumPath, State},
     http::StatusCode,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -44,10 +44,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/enroll", post(enroll_handler))
-        .route(
-            "/v1/sessions/{session_id}/parts/{part}",
-            post(push_handler),
-        )
+        .route("/v1/sessions/{session_id}/parts/{part}", post(push_handler))
         .route(
             "/v1/sessions/{session_id}/parts/{part}/privileges",
             post(privileges_handler),
@@ -243,23 +240,35 @@ fn privileges_blocking(
     part: u32,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let peer_fingerprint = peer_fingerprint
-        .ok_or((StatusCode::UNAUTHORIZED, "client certificate required".into()))?;
+    let peer_fingerprint = peer_fingerprint.ok_or((
+        StatusCode::UNAUTHORIZED,
+        "client certificate required".into(),
+    ))?;
     let sender_name = find_sender_by_fingerprint(&state.cfg.storage.dir, &peer_fingerprint)
         .ok_or((StatusCode::UNAUTHORIZED, "client cert not enrolled".into()))?;
     let sender = SenderDirs::under(&state.cfg.storage.dir, &sender_name)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // The sidecar must describe the URL's session/part and be an audit sidecar.
-    let doc: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("parse privileges json: {e}")))?;
+    let doc: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("parse privileges json: {e}"),
+        )
+    })?;
     if doc.get("v").and_then(|v| v.as_str()) != Some("epitropos-audit-events-v1") {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "not an epitropos-audit sidecar".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not an epitropos-audit sidecar".into(),
+        ));
     }
     if doc.get("session_id").and_then(|v| v.as_str()) != Some(session_id.as_str())
         || doc.get("part").and_then(|v| v.as_u64()) != Some(part as u64)
     {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "session/part mismatch with URL".into()));
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "session/part mismatch with URL".into(),
+        ));
     }
 
     // Locate the already-stored recording (user isn't in the URL; scan the
@@ -315,8 +324,10 @@ fn push_blocking(
     // enrolled key, which was an unauthenticated CPU-amplification DoS. The
     // manifest must then still verify against THIS sender's signing key below,
     // binding the transport identity to the signing identity.
-    let peer_fingerprint = peer_fingerprint
-        .ok_or((StatusCode::UNAUTHORIZED, "client certificate required".into()))?;
+    let peer_fingerprint = peer_fingerprint.ok_or((
+        StatusCode::UNAUTHORIZED,
+        "client certificate required".into(),
+    ))?;
     let sender_name = find_sender_by_fingerprint(&state.cfg.storage.dir, &peer_fingerprint)
         .ok_or((StatusCode::UNAUTHORIZED, "client cert not enrolled".into()))?;
 
@@ -491,7 +502,11 @@ mod tests {
         assert!(enroll_blocking(state.clone(), Some(cert_fp.clone()), body()).is_ok());
         // The same token cannot be reused.
         let (code, _) = enroll_blocking(state.clone(), Some(cert_fp), body()).unwrap_err();
-        assert_eq!(code, StatusCode::UNAUTHORIZED, "reused token must be rejected");
+        assert_eq!(
+            code,
+            StatusCode::UNAUTHORIZED,
+            "reused token must be rejected"
+        );
     }
 
     #[test]
@@ -523,8 +538,7 @@ mod tests {
         // cert -> rejected (no proof the enroller holds the key).
         let (code, _) = enroll_blocking(state.clone(), None, body.clone()).unwrap_err();
         assert_eq!(code, StatusCode::UNAUTHORIZED);
-        let (code, _) =
-            enroll_blocking(state, Some("deadbeef".into()), body).unwrap_err();
+        let (code, _) = enroll_blocking(state, Some("deadbeef".into()), body).unwrap_err();
         assert_eq!(code, StatusCode::UNAUTHORIZED);
     }
 

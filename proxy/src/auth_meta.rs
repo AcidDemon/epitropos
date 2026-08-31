@@ -138,7 +138,10 @@ mod tests {
     #[test]
     fn clean_value_accepts_normal_and_rejects_control() {
         assert_eq!(clean_value("sshd").as_deref(), Some("sshd"));
-        assert_eq!(clean_value("host.example.com").as_deref(), Some("host.example.com"));
+        assert_eq!(
+            clean_value("host.example.com").as_deref(),
+            Some("host.example.com")
+        );
         assert_eq!(clean_value("bad\x07bell"), None);
         assert_eq!(clean_value("carriage\rreturn"), None);
     }

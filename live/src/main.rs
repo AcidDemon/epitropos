@@ -97,7 +97,9 @@ fn cmd_watch(args: &[String]) {
                 identity_path = Some(args[i].clone());
             }
             "-h" | "--help" => {
-                eprintln!("Usage: epitropos-live watch [--dir DIR] [--identity KEYFILE] <SESSION_ID>");
+                eprintln!(
+                    "Usage: epitropos-live watch [--dir DIR] [--identity KEYFILE] <SESSION_ID>"
+                );
                 std::process::exit(0);
             }
             other if !other.starts_with('-') => {

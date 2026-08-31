@@ -153,8 +153,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedServerVerifier {
 /// (hex SHA-256) and presents this sender's client cert (mTLS), for both enroll
 /// and push.
 fn build_agent(expected_collector_fp: &str) -> Result<ureq::Agent, String> {
-    let cert_pem =
-        fs::read(PathBuf::from(STATE_DIR).join("cert.pem")).map_err(|e| format!("read cert: {e}"))?;
+    let cert_pem = fs::read(PathBuf::from(STATE_DIR).join("cert.pem"))
+        .map_err(|e| format!("read cert: {e}"))?;
     let certs: Vec<_> = rustls_pemfile::certs(&mut &cert_pem[..])
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("parse cert: {e}"))?;
@@ -182,8 +182,7 @@ fn build_agent(expected_collector_fp: &str) -> Result<ureq::Agent, String> {
 }
 
 fn cmd_enroll(args: &[String]) -> Result<(), String> {
-    let collector =
-        find_flag(args, "--collector").ok_or("--collector <addr:port> required")?;
+    let collector = find_flag(args, "--collector").ok_or("--collector <addr:port> required")?;
     let token = find_flag(args, "--token").ok_or("--token required")?;
     let expect_fp =
         find_flag(args, "--expect-fingerprint").ok_or("--expect-fingerprint required")?;
@@ -208,7 +207,10 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
     let signing_pub = fs::read("/var/lib/katagrapho/signing.pub")
         .map_err(|e| format!("read signing.pub: {e}"))?;
     if signing_pub.len() != 32 {
-        return Err(format!("signing.pub must be 32 bytes, got {}", signing_pub.len()));
+        return Err(format!(
+            "signing.pub must be 32 bytes, got {}",
+            signing_pub.len()
+        ));
     }
 
     let sender_name = fs::read_to_string("/proc/sys/kernel/hostname")
@@ -244,8 +246,9 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
         return Err(format!("enroll failed (HTTP {resp_status}): {body_str}"));
     }
 
-    let resp_json: serde_json::Value =
-        resp.into_json().map_err(|e| format!("parse response: {e}"))?;
+    let resp_json: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("parse response: {e}"))?;
 
     // Verify fingerprint.
     let collector_fp = resp_json["collector_fingerprint_sha256"]
@@ -259,8 +262,11 @@ fn cmd_enroll(args: &[String]) -> Result<(), String> {
 
     // Pin collector cert.
     let collector_cert_pem = resp_json["collector_tls_cert_pem"].as_str().unwrap_or("");
-    fs::write(PathBuf::from(STATE_DIR).join("collector.pem"), collector_cert_pem)
-        .map_err(|e| format!("write collector.pem: {e}"))?;
+    fs::write(
+        PathBuf::from(STATE_DIR).join("collector.pem"),
+        collector_cert_pem,
+    )
+    .map_err(|e| format!("write collector.pem: {e}"))?;
 
     // Save collector address for push.
     fs::write(PathBuf::from(STATE_DIR).join("collector_addr"), &collector)
@@ -277,7 +283,9 @@ fn generate_self_signed(cert_path: &Path, key_path: &Path, cn: &str) -> Result<(
         rcgen::CertificateParams::new(vec![cn.to_string()]).map_err(|e| format!("params: {e}"))?;
     params.not_before = time::OffsetDateTime::now_utc();
     params.not_after = params.not_before + time::Duration::days(365 * 10);
-    let cert = params.self_signed(&key_pair).map_err(|e| format!("sign: {e}"))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| format!("sign: {e}"))?;
     write_pem(key_path, key_pair.serialize_pem().as_bytes(), 0o400)?;
     write_pem(cert_path, cert.pem().as_bytes(), 0o444)?;
     Ok(())
@@ -370,13 +378,14 @@ fn cmd_push(_args: &[String]) -> Result<(), String> {
         if parts.len() < 5 {
             continue;
         }
-        let (user, session_id, part_str, manifest_hash) =
-            (parts[1], parts[2], parts[3], parts[4]);
+        let (user, session_id, part_str, manifest_hash) = (parts[1], parts[2], parts[3], parts[4]);
         let part: u32 = part_str.parse().unwrap_or(0);
 
         let rec_name = format!("{session_id}.part{part}.kgv1.age");
         let rec_path = recording_root.join(user).join(&rec_name);
-        let sidecar_path = recording_root.join(user).join(format!("{rec_name}.manifest.json"));
+        let sidecar_path = recording_root
+            .join(user)
+            .join(format!("{rec_name}.manifest.json"));
 
         if !rec_path.exists() || !sidecar_path.exists() {
             eprintln!("Missing files for {session_id} part {part}; skipping");
@@ -415,7 +424,9 @@ fn cmd_push(_args: &[String]) -> Result<(), String> {
         // epitropos-audit daemon has already produced it. Timing: it is produced
         // on manifest arrival, so it usually exists by this tick. ponytail: no
         // re-ship if it lands after this entry advances — robust backfill deferred.
-        let priv_path = recording_root.join(user).join(format!("{rec_name}.privileges.json"));
+        let priv_path = recording_root
+            .join(user)
+            .join(format!("{rec_name}.privileges.json"));
         if priv_path.exists() {
             match fs::read(&priv_path) {
                 Ok(priv_bytes) => {
@@ -484,7 +495,10 @@ fn cmd_status(_args: &[String]) -> Result<(), String> {
         0
     } else if head_log.exists() {
         let c = fs::read_to_string(&head_log).unwrap_or_default();
-        c.lines().position(|l| l.ends_with(&last)).map(|i| i + 1).unwrap_or(0)
+        c.lines()
+            .position(|l| l.ends_with(&last))
+            .map(|i| i + 1)
+            .unwrap_or(0)
     } else {
         0
     };

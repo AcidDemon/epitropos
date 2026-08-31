@@ -33,9 +33,8 @@ impl KeyPair {
         let verifying = signing.verifying_key();
 
         if pub_path.exists() {
-            let on_disk = fs::read(pub_path).map_err(|e| {
-                SentinelError::Signing(format!("read {}: {e}", pub_path.display()))
-            })?;
+            let on_disk = fs::read(pub_path)
+                .map_err(|e| SentinelError::Signing(format!("read {}: {e}", pub_path.display())))?;
             if on_disk.len() != 32 || on_disk != verifying.as_bytes() {
                 return Err(SentinelError::Signing(
                     "signing.pub does not match signing.key".into(),
@@ -86,8 +85,7 @@ pub fn verify_with_pub(
 
 fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<(), SentinelError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| SentinelError::Signing(format!("mkdir: {e}")))?;
+        fs::create_dir_all(parent).map_err(|e| SentinelError::Signing(format!("mkdir: {e}")))?;
     }
     let tmp = path.with_extension("tmp");
     let mut f = fs::OpenOptions::new()
@@ -102,8 +100,7 @@ fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<(), SentinelError
     f.sync_all()
         .map_err(|e| SentinelError::Signing(format!("fsync: {e}")))?;
     drop(f);
-    fs::rename(&tmp, path)
-        .map_err(|e| SentinelError::Signing(format!("rename: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| SentinelError::Signing(format!("rename: {e}")))?;
     Ok(())
 }
 
@@ -115,8 +112,7 @@ mod tests {
     #[test]
     fn generate_load_round_trip() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let kp2 = KeyPair::load(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         assert_eq!(kp.public_bytes(), kp2.public_bytes());
     }
@@ -124,8 +120,7 @@ mod tests {
     #[test]
     fn sign_verify_round_trip() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let d = [7u8; 32];
         let s = kp.sign(&d);
         verify_with_pub(&kp.public_bytes(), &d, &s).unwrap();
@@ -134,8 +129,7 @@ mod tests {
     #[test]
     fn verify_rejects_tampered() {
         let dir = tempdir().unwrap();
-        let kp =
-            KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
+        let kp = KeyPair::generate_to(&dir.path().join("k"), &dir.path().join("p")).unwrap();
         let d = [7u8; 32];
         let mut s = kp.sign(&d);
         s[0] ^= 0xFF;

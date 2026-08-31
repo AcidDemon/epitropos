@@ -184,20 +184,33 @@
         system:
         let
           pkgs = pkgsFor system;
-          rustToolchain = rustToolchainFor pkgs;
+          # minimal lacks rustfmt/clippy, which the fmt and clippy checks need.
+          rustToolchain = (rustToolchainFor pkgs).override {
+            extensions = [
+              "rustfmt"
+              "clippy"
+            ];
+          };
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           src = craneLib.cleanCargoSource ./.;
-        in
-        {
-          package = self.packages.${system}.default;
-
-          clippy = craneLib.cargoClippy {
+          checkArgs = {
             inherit src;
             pname = "epitropos";
             version = "0.1.0";
             strictDeps = true;
-            cargoClippyExtraArgs = "-- --deny warnings";
           };
+          checkArtifacts = craneLib.buildDepsOnly checkArgs;
+        in
+        {
+          package = self.packages.${system}.default;
+
+          clippy = craneLib.cargoClippy (
+            checkArgs
+            // {
+              cargoArtifacts = checkArtifacts;
+              cargoClippyExtraArgs = "-- --deny warnings";
+            }
+          );
 
           fmt = craneLib.cargoFmt {
             inherit src;
@@ -205,12 +218,7 @@
             version = "0.1.0";
           };
 
-          tests = craneLib.cargoTest {
-            inherit src;
-            pname = "epitropos";
-            version = "0.1.0";
-            strictDeps = true;
-          };
+          tests = craneLib.cargoTest (checkArgs // { cargoArtifacts = checkArtifacts; });
 
           vm-test = import ./tests/vm-proxy.nix {
             inherit pkgs;

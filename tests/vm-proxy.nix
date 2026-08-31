@@ -41,10 +41,26 @@ pkgs.testers.nixosTest {
       isNormalUser = true;
     };
 
-    environment.systemPackages = [ pkgs.age ];
+
+    # katagrapho-verify lives in the katagrapho package; services.katagrapho
+    # does not put it on PATH, so the test has to install it explicitly.
+    environment.systemPackages = [
+      pkgs.age
+      katagraphoFlake.packages.${pkgs.stdenv.hostPlatform.system}.default
+    ];
   };
 
   testScript = ''
+    # kgv1 base64-encodes every out/in payload in "b" (kgv1.rs:63-65), so the
+    # session text never appears literally in a decrypted cast. Decode each
+    # chunk and return the concatenation. Chunks are padded individually, hence
+    # the loop rather than one base64 -d over the whole stream.
+    def decoded(path):
+        return server.succeed(
+            f"grep -o '\"b\":\"[^\"]*\"' {path} | cut -d'\"' -f4 "
+            "| while read -r b; do printf '%s' \"$b\" | base64 -d; done"
+        )
+
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
@@ -81,13 +97,58 @@ pkgs.testers.nixosTest {
     # Verify we can decrypt the recording
     server.succeed("age -d -i /etc/age/key.txt /var/log/ssh-sessions/testuser/*.cast.age > /tmp/decrypted.cast")
 
+    # The recording must actually contain what the session printed. Everything
+    # else here checks structure -- file exists, header parses, signature and
+    # chain verify -- all of which pass on a recording with the wrong payload.
+    assert "encrypted-test-data" in decoded("/tmp/decrypted.cast"), \
+        "recording does not contain the session output"
+
     # Verify decrypted content is kgv1 format
-    server.succeed("grep -q 'encrypted-test-data' /tmp/decrypted.cast")
     server.succeed("head -1 /tmp/decrypted.cast | grep -q '\"kind\":\"header\"'")
     server.succeed("head -1 /tmp/decrypted.cast | grep -q '\"v\":\"katagrapho-v1\"'")
 
     # Verify katagrapho-verify validates the sidecar signature
     server.succeed("katagrapho-verify /var/log/ssh-sessions/testuser/*.manifest.json")
+
+    # ------------------------------------------------------------------
+    # Everything below records further sessions, so it must come after the
+    # single-recording assertions above -- those glob *.cast.age and age(1)
+    # takes exactly one input file.
+    # ------------------------------------------------------------------
+
+    # A recorded session must not damage the host. ns_exec unshares a mount
+    # namespace and mounts /proc; without MS_REC|MS_PRIVATE that mount
+    # propagates back into the host namespace, shadows the real procfs, breaks
+    # unix_chkpwd and denies every later login on the machine -- including for
+    # accounts that are not recorded at all.
+    server.succeed("test -e /proc/self/mountinfo")
+    server.succeed("timeout 30 ${ssh} 'echo post-recording-login-ok'")
+
+    # The proxy wrapper is setgid ssh-sessions so it can exec the katagrapho
+    # wrapper (0550 session-writer:ssh-sessions). drop_to_real_user does not
+    # call setgroups -- it cannot, without CAP_SETGID -- so assert the
+    # privileged group does not survive into the recorded shell, and that the
+    # user's real groups are still intact. One session, three ids.
+    ids = server.succeed("timeout 30 ${ssh} 'id -un; id -gn; id -Gn'").splitlines()
+    assert ids[0].strip() == "testuser", f"wrong uid in recorded shell: {ids}"
+    assert ids[1].strip() == "users", f"wrong gid in recorded shell: {ids}"
+    shell_groups = ids[2].split()
+    assert "ssh-sessions" not in shell_groups, \
+        f"recorded shell leaked the wrapper setgid group: {shell_groups}"
+    assert "session-proxy" in shell_groups, \
+        f"recorded shell lost its real supplementary groups: {shell_groups}"
+
+    # PID isolation: the recorded shell runs as PID 1 in its own PID namespace,
+    # so the recorder's pids are not addressable from inside the session. This
+    # is what makes the proxy unkillable -- both it and the recorded shell run
+    # with the same real uid, so kill(2) would otherwise be permitted.
+    hidden = server.succeed(
+        "timeout 30 ${ssh} '"
+        "pgrep -x epitropos >/dev/null || echo PROXY-HIDDEN; "
+        "pgrep -x katagrapho >/dev/null || echo WRITER-HIDDEN'"
+    )
+    assert "PROXY-HIDDEN" in hidden, "recorded shell can see the proxy pid"
+    assert "WRITER-HIDDEN" in hidden, "recorded shell can see the katagrapho pid"
 
     # ------------------------------------------------------------------
     # F1: recording failure kills the session (fail-closed), partial
@@ -126,6 +187,7 @@ pkgs.testers.nixosTest {
             "ls -t /var/log/ssh-sessions/testuser/*.cast.age | head -n1"
         ).strip()
         server.succeed(f"age -d -i /etc/age/key.txt {newest} > /tmp/f1-partial.cast")
-        server.succeed("grep -q MARKER-BEFORE-KILL /tmp/f1-partial.cast")
+        assert "MARKER-BEFORE-KILL" in decoded("/tmp/f1-partial.cast"), \
+            "partial recording lost the output written before the kill"
   '';
 }

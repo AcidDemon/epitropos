@@ -39,11 +39,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1775312940,
-        "narHash": "sha256-yVILDC0YyagyUG1Hv965kI/injlROls2nQO9Gy7cz1Y=",
+        "lastModified": 1783876227,
+        "narHash": "sha256-Xp/G3tFU3ry8gGF4KI8p31VayBrWLkl7zCMwjJCO5BU=",
         "owner": "AcidDemon",
         "repo": "katagrapho",
-        "rev": "74db9c7650d0989aa3c68531ec46aee901e41dca",
+        "rev": "88bbf2d5cb6110cd0bced9faa653fa30560273db",
         "type": "github"
       },
       "original": {

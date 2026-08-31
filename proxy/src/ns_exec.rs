@@ -127,6 +127,31 @@ fn main() {
         -1 => die(&format!("fork: {}", std::io::Error::last_os_error())),
         0 => {
             // Child — PID 1 in new namespace.
+            //
+            // Make every mount in this namespace private BEFORE touching /proc.
+            // systemd sets / to MS_SHARED at boot and CLONE_NEWNS inherits that
+            // propagation, so without this the /proc mount below propagates back
+            // into the host namespace and shadows the real procfs for every
+            // process on the machine. The visible symptom is that unix_chkpwd
+            // stops working, so pam_unix's account phase denies every subsequent
+            // login host-wide until reboot.
+            let root_path = CString::new("/").unwrap();
+            if unsafe {
+                libc::mount(
+                    std::ptr::null(),
+                    root_path.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_REC | libc::MS_PRIVATE,
+                    std::ptr::null(),
+                )
+            } < 0
+            {
+                die(&format!(
+                    "make-rprivate /: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
             // Remount /proc to reflect the new PID namespace.
             let proc_path = CString::new("/proc").unwrap();
             let proc_type = CString::new("proc").unwrap();

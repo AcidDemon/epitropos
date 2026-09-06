@@ -138,6 +138,17 @@ pkgs.testers.nixosTest {
     assert "session-proxy" in shell_groups, \
         f"recorded shell lost its real supplementary groups: {shell_groups}"
 
+    # id -G cannot observe the SAVED gid: a regression from setresgid to
+    # setegid-only would leave saved-gid=ssh-sessions (silently restorable
+    # via setegid) and still pass the checks above. /proc/self/status shows
+    # real/effective/saved/fs — all four must be the user's real gid.
+    users_gid = server.succeed("getent group users").split(":")[2].strip()
+    gid_line = server.succeed(
+        "timeout 30 ${ssh} 'grep ^Gid: /proc/self/status'"
+    ).split()
+    assert gid_line[1:5] == [users_gid] * 4, \
+        f"recorded shell kept a privileged gid (real/eff/saved/fs): {gid_line}"
+
     # PID isolation: the recorded shell runs as PID 1 in its own PID namespace,
     # so the recorder's pids are not addressable from inside the session. This
     # is what makes the proxy unkillable -- both it and the recorded shell run

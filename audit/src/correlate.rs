@@ -148,10 +148,11 @@ mod tests {
     #[test]
     fn quantizes_event_times_for_stable_signing() {
         let m = manifest(Some(1), "boot-1"); // started 1000.0, ended 1100.0
-        let events = [ev(1050.97199988365173, Some(1))]; // full-precision ts, in window
+        const FULL_PRECISION_TS: f64 = 1050.971_999_883_651_7; // in window
+        let events = [ev(FULL_PRECISION_TS, Some(1))];
         let sc = correlate(&m, &events, "0.1", "c", 0.0, "").unwrap();
         assert_eq!(sc.events[0].t, 50.972); // ms-quantized, round-trip stable
-        assert_eq!(sc.events[0].audit_ts, round_ms(1050.97199988365173));
+        assert_eq!(sc.events[0].audit_ts, round_ms(FULL_PRECISION_TS));
     }
 
     #[test]

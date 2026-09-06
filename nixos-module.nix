@@ -261,6 +261,13 @@ in
         assertion = !cfg.live.enable || cfg.live.recipientFile != null;
         message = "services.epitropos.live.enable requires services.epitropos.live.recipientFile (the operator's age public recipient).";
       }
+      {
+        # internal-sftp runs inside sshd and never execs the user's login
+        # shell, so sftp/scp sessions would bypass recording entirely.
+        # The default external sftp-server goes through the shell wrapper.
+        assertion = config.services.openssh.sftpServerExecutable or "" != "internal-sftp";
+        message = "epitropos: services.openssh.sftpServerExecutable = \"internal-sftp\" bypasses session recording (sftp never execs the login shell); use the default external sftp-server.";
+      }
     ];
 
     users.groups = {

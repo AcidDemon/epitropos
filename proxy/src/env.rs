@@ -71,8 +71,13 @@ pub fn build_shell_env(
 mod tests {
     use super::*;
 
+    // The process environment is global: these tests mutate it and race under
+    // the parallel test runner. Serialize them.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sanitize_removes_dangerous_vars() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("LD_PRELOAD", "/evil.so");
             std::env::set_var("GCONV_PATH", "/evil");
@@ -86,6 +91,7 @@ mod tests {
 
     #[test]
     fn shell_env_includes_whitelist() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("HOME", "/home/test");
             std::env::set_var("EVIL", "nope");

@@ -69,10 +69,13 @@ mod tests {
 
     #[test]
     fn tokens_refill_over_time() {
-        let mut rl = RateLimiter::new(10000, 10000, RateLimitAction::Drop);
-        assert!(rl.check(10000));
+        // rate 1/s: earning even one token takes a full second, so the
+        // negative assert cannot flake on scheduler delay. Refill is then
+        // exercised by rewinding `last` instead of sleeping.
+        let mut rl = RateLimiter::new(1, 10, RateLimitAction::Drop);
+        assert!(rl.check(10));
         assert!(!rl.check(1));
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        rl.last = Instant::now() - std::time::Duration::from_secs(2);
         assert!(rl.check(1));
     }
 }

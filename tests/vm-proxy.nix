@@ -3,6 +3,12 @@
 { pkgs, katagraphoFlake, epitroposFlake }:
 let
   ssh = "ssh -i /tmp/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null testuser@localhost";
+  # Fixed throwaway keypair, generated for this test only. The public half is
+  # baked into the store so the test covers the module's store-path
+  # recipientFile plumbing (install to /etc/epitropos); a runtime-generated
+  # key could only ever exercise the /etc passthrough case.
+  testPubKey = "age17gnsphc43g7eehckaxq6ecqkamaqd7prxddxfzul3950wqgakd9qu7zldg";
+  testSecretKey = "AGE-SECRET-KEY-1R59K78Z3TUK27KF3K90WXYKZCJC7UCUAYQC32SFGUXY4HGAGMQ4SAGUG2R";
 in
 pkgs.testers.nixosTest {
   name = "epitropos-session-recording";
@@ -25,7 +31,9 @@ pkgs.testers.nixosTest {
       enable = true;
       encryption = {
         enable = true;
-        recipientFile = "/etc/age/recipients.txt";
+        # Store path on purpose: the module must relocate it to
+        # /etc/epitropos/recording-recipients or katagrapho rejects it.
+        recipientFile = pkgs.writeText "test-recipients" testPubKey;
       };
       recordUsers = [ "testuser" ];
       shell.default = "/run/current-system/sw/bin/bash";
@@ -64,10 +72,13 @@ pkgs.testers.nixosTest {
     server.wait_for_unit("sshd.service")
     server.wait_for_unit("multi-user.target")
 
-    # Generate age keypair
+    # Install the fixed test keypair. The private half decrypts recordings;
+    # recipients.txt serves the katagrapho-module path that still reads /etc/age.
     server.succeed("mkdir -p /etc/age")
-    server.succeed("age-keygen -o /etc/age/key.txt 2>&1 | grep '^Public key:' | awk '{print $NF}' > /etc/age/recipients.txt")
-    print(server.succeed("cat /etc/age/recipients.txt"))
+    server.succeed("echo '${testSecretKey}' > /etc/age/key.txt && chmod 600 /etc/age/key.txt")
+    server.succeed("echo '${testPubKey}' > /etc/age/recipients.txt")
+    # The store-path recipientFile must have been installed under /etc/epitropos.
+    server.succeed("grep -q '${testPubKey}' /etc/epitropos/recording-recipients")
 
     # Set up SSH key auth
     server.succeed("ssh-keygen -t ed25519 -f /tmp/test-key -N \"\"")

@@ -19,6 +19,23 @@ let
 
   tomlFormat = pkgs.formats.toml { };
 
+  # katagrapho only accepts recipient files under /etc/katagrapho, /etc/age,
+  # or /etc/epitropos. A path-literal recipientFile is copied into the nix
+  # store, which katagrapho rejects at session start — and with the default
+  # closed fail policy that denies every recorded login. Install store paths
+  # into /etc/epitropos and point the config there; non-store paths (already
+  # under /etc, or provisioned at runtime) pass through unchanged.
+  recipientInStore =
+    cfg.encryption.recipientFile != null
+    && lib.hasPrefix "${builtins.storeDir}/" (toString cfg.encryption.recipientFile);
+  recipientPath =
+    if cfg.encryption.recipientFile == null then
+      ""
+    else if recipientInStore then
+      "/etc/epitropos/recording-recipients"
+    else
+      toString cfg.encryption.recipientFile;
+
   configFile = tomlFormat.generate "epitropos-config.toml" {
     general = {
       katagrapho_path = "/run/wrappers/bin/katagrapho";
@@ -32,7 +49,7 @@ let
     };
     encryption = {
       enabled = cfg.encryption.enable;
-      recipient_file = if cfg.encryption.recipientFile != null then cfg.encryption.recipientFile else "";
+      recipient_file = recipientPath;
     };
     fail_policy = {
       default = cfg.failPolicy.default;
@@ -342,6 +359,13 @@ in
       mode = "0440";
       user = cfg.proxyUser;
       group = cfg.proxyGroup;
+    };
+
+    # Age recipients are public keys: world-readable is fine, and katagrapho
+    # reads the file as session-writer, so it must not be proxy-group gated.
+    environment.etc."epitropos/recording-recipients" = mkIf recipientInStore {
+      source = cfg.encryption.recipientFile;
+      mode = "0444";
     };
 
     systemd.tmpfiles.rules = [

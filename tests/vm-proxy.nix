@@ -40,6 +40,12 @@ pkgs.testers.nixosTest {
       failPolicy.default = "closed";
     };
 
+    # Materialize /etc as symlinks into the store (not the newer overlay of
+    # real files) so the recipient file at /etc/epitropos/recording-recipients
+    # is a store symlink, exactly as on a deployed host. This is what a naive
+    # canonicalize-then-allowlist check in katagrapho gets wrong.
+    system.etc.overlay.enable = false;
+
     services.openssh = {
       enable = true;
       settings.PasswordAuthentication = false;

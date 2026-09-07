@@ -188,8 +188,13 @@ in
 
     noticeText = mkOption {
       type = types.str;
-      default = "\\nATTENTION! Your session is being recorded!\\n\\n";
-      description = "Banner shown before recording starts. Empty string to disable.";
+      default = "\nATTENTION! Your session is being recorded!\n\n";
+      description = ''
+        Banner printed once before the shell starts. Written verbatim, so
+        include real newlines (as here) for spacing around the prompt; the
+        proxy does not interpret C-style escapes. Set to "" to disable the
+        banner entirely.
+      '';
     };
 
     onRecordingFailure = mkOption {

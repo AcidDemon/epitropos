@@ -65,18 +65,36 @@ const DIM: &str = "\x1b[2m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
-/// Render a dim tree block: a title line, then one `key  value` row per pair
-/// with bold keys and box-drawing connectors. Keys are padded to align values.
+/// Whether stderr is a terminal. ANSI styling is only meaningful on a TTY;
+/// for a non-interactive ssh command, scp, or CI the stream is a pipe and the
+/// escape codes would land as literal junk in the caller's logs.
+fn stderr_is_tty() -> bool {
+    unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
+}
+
+/// Render a tree block: a title line, then one `key  value` row per pair with
+/// box-drawing connectors, keys padded to align values. On a TTY the block is
+/// dimmed with bold keys; off a TTY it is emitted plain so captured output
+/// stays clean.
 fn emit_block(title: &str, pairs: &[(&str, String)]) {
+    eprint!("{}", render_block(title, pairs, stderr_is_tty()));
+}
+
+fn render_block(title: &str, pairs: &[(&str, String)], styled: bool) -> String {
+    let (dim, bold, reset) = if styled {
+        (DIM, BOLD, RESET)
+    } else {
+        ("", "", "")
+    };
     let key_w = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-    let mut out = format!("{DIM}epitropos ▸ {title}{RESET}\n");
+    let mut out = format!("{dim}epitropos ▸ {title}{reset}\n");
     for (i, (k, v)) in pairs.iter().enumerate() {
         let conn = if i + 1 == pairs.len() { "└─" } else { "├─" };
         out.push_str(&format!(
-            "{DIM}  {conn} {RESET}{BOLD}{k:<key_w$}{RESET}{DIM}  {v}{RESET}\n"
+            "{dim}  {conn} {reset}{bold}{k:<key_w$}{reset}{dim}  {v}{reset}\n"
         ));
     }
-    eprint!("{out}");
+    out
 }
 
 fn timestamp_now() -> u64 {
@@ -113,6 +131,18 @@ fn days_to_ymd(days_since_epoch: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unstyled_block_has_no_ansi() {
+        let pairs = [("user", "acid".to_string()), ("session", "abc".to_string())];
+        let plain = render_block("session recording started", &pairs, false);
+        assert!(!plain.contains('\x1b'), "plain output leaked an escape: {plain:?}");
+        assert!(plain.contains("epitropos ▸ session recording started"));
+        assert!(plain.contains("├─ user"));
+        assert!(plain.contains("└─ session"));
+        // styled output must carry the escapes.
+        assert!(render_block("t", &pairs, true).contains('\x1b'));
+    }
 
     #[test]
     fn fmt_utc_known_epoch() {

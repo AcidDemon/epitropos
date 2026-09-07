@@ -147,16 +147,16 @@ pkgs.testers.nixosTest {
     server.succeed("test -e /proc/self/mountinfo")
     server.succeed("timeout 30 ${ssh} 'echo post-recording-login-ok'")
 
-    # The proxy wrapper is setgid ssh-sessions so it can exec the katagrapho
-    # wrapper (0550 session-writer:ssh-sessions). drop_to_real_user does not
-    # call setgroups -- it cannot, without CAP_SETGID -- so assert the
+    # The proxy wrapper is setgid the katagrapho group so it can exec the
+    # katagrapho wrapper (0550 katagrapho:katagrapho). drop_to_real_user does
+    # not call setgroups -- it cannot, without CAP_SETGID -- so assert the
     # privileged group does not survive into the recorded shell, and that the
     # user's real groups are still intact. One session, three ids.
     ids = server.succeed("timeout 30 ${ssh} 'id -un; id -gn; id -Gn'").splitlines()
     assert ids[0].strip() == "testuser", f"wrong uid in recorded shell: {ids}"
     assert ids[1].strip() == "users", f"wrong gid in recorded shell: {ids}"
     shell_groups = ids[2].split()
-    assert "ssh-sessions" not in shell_groups, \
+    assert "katagrapho" not in shell_groups, \
         f"recorded shell leaked the wrapper setgid group: {shell_groups}"
     assert "session-proxy" in shell_groups, \
         f"recorded shell lost its real supplementary groups: {shell_groups}"
@@ -225,3 +225,4 @@ pkgs.testers.nixosTest {
             "partial recording lost the output written before the kill"
   '';
 }
+

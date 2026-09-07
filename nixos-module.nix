@@ -323,12 +323,14 @@ in
       epitropos = {
         source = lib.getExe cfg.package;
         owner = cfg.proxyUser;
-        # setgid ssh-sessions so the proxy can exec the katagrapho wrapper,
-        # which is 0550 session-writer:ssh-sessions. setuid moves euid only —
-        # the process keeps the recorded user's supplementary groups — so a
-        # group on the session-proxy account would never reach spawn_katagrapho.
-        # This grants no read on the corpus: that is katagrapho-readers.
-        group = "ssh-sessions";
+        # setgid the katagrapho group so the proxy can exec the katagrapho
+        # wrapper, which is 0550 <katagrapho.user>:<katagrapho.group>. setuid
+        # moves euid only — the process keeps the recorded user's supplementary
+        # groups — so a group on the session-proxy account would never reach
+        # spawn_katagrapho. This grants no read on the corpus: that is
+        # katagrapho-readers. Track katagrapho's configured group, never a
+        # hardcoded name, so renaming it cannot lock the proxy out of exec.
+        group = config.services.katagrapho.group or "ssh-sessions";
         setuid = true;
         setgid = true;
         # o+x replaces the proxyGroup gate the group field used to provide.

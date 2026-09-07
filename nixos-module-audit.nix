@@ -112,10 +112,11 @@ in
       shell = "/run/current-system/sw/bin/nologin";
       # (2) WRITE the sidecar next to the recording: the feed must write into
       # katagrapho's per-user recording dirs. The clean way is a shared group —
-      # add this user to `ssh-sessions` and make katagrapho's per-user dirs
+      # add this user to katagrapho's group and make katagrapho's per-user dirs
       # group-writable (2770). Until katagrapho does that, CAP_DAC_OVERRIDE below
-      # is the groundwork shortcut.
-      extraGroups = [ "ssh-sessions" ];
+      # is the groundwork shortcut. Track the configured group, not a hardcoded
+      # name.
+      extraGroups = [ (config.services.katagrapho.group or "ssh-sessions") ];
     };
     users.groups.epitropos-audit = { };
 

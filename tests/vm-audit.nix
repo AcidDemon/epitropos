@@ -110,7 +110,7 @@ pkgs.testers.nixosTest {
     sid = "diagsession0000"
     recdir = "/var/log/ssh-sessions/testuser"
     rec = f"{recdir}/{sid}.part0.kgv1.age"
-    host.succeed(f"install -d -o session-writer -g ssh-sessions -m 2750 {recdir}")
+    host.succeed(f"install -d -o katagrapho -g katagrapho -m 2750 {recdir}")
     host.succeed(f": > {rec}")
     manifest = ('{"session_id":"%s","part":0,"host":"host","boot_id":"%s",'
                 '"audit_session_id":%s,"started":%d,"ended":%d}'

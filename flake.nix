@@ -231,6 +231,12 @@
             katagraphoFlake = katagrapho;
             epitroposFlake = self;
           };
+
+          vm-yubikey-test = import ./tests/vm-yubikey.nix {
+            inherit pkgs;
+            katagraphoFlake = katagrapho;
+            epitroposFlake = self;
+          };
         }
       );
 

@@ -361,11 +361,21 @@ in
       group = cfg.proxyGroup;
     };
 
-    # Age recipients are public keys: world-readable is fine, and katagrapho
-    # reads the file as session-writer, so it must not be proxy-group gated.
-    environment.etc."epitropos/recording-recipients" = mkIf recipientInStore {
-      source = cfg.encryption.recipientFile;
-      mode = "0444";
+    # Materialize the recipient as a REAL file, not an environment.etc symlink.
+    # katagrapho only accepts recipient paths under /etc/katagrapho, /etc/age,
+    # or /etc/epitropos, and it canonicalizes before checking: an /etc symlink
+    # into the nix store resolves back out of the allowlist and is rejected,
+    # which under a closed fail policy denies every recorded login. A copied
+    # file has no symlink to follow, so its canonical path stays in
+    # /etc/epitropos. Age recipients are public keys, so 0444 is fine, and
+    # katagrapho reads it as session-writer (not the proxy group).
+    # Runs after the `etc` activation so /etc/epitropos exists.
+    system.activationScripts.epitroposRecipient = mkIf recipientInStore {
+      deps = [ "etc" ];
+      text = ''
+        install -Dm0444 ${lib.escapeShellArg (toString cfg.encryption.recipientFile)} \
+          /etc/epitropos/recording-recipients
+      '';
     };
 
     systemd.tmpfiles.rules = [

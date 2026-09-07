@@ -83,8 +83,14 @@ pkgs.testers.nixosTest {
     server.succeed("mkdir -p /etc/age")
     server.succeed("echo '${testSecretKey}' > /etc/age/key.txt && chmod 600 /etc/age/key.txt")
     server.succeed("echo '${testPubKey}' > /etc/age/recipients.txt")
-    # The store-path recipientFile must have been installed under /etc/epitropos.
+    # The store-path recipientFile must be installed under /etc/epitropos as a
+    # REAL file, not a symlink into the store: katagrapho canonicalizes the
+    # recipient path against its /etc allowlist, so a store symlink resolves out
+    # and is rejected (this is what locked the host out). A real file's
+    # canonical path stays in /etc/epitropos.
     server.succeed("grep -q '${testPubKey}' /etc/epitropos/recording-recipients")
+    server.succeed("test ! -L /etc/epitropos/recording-recipients")
+    server.succeed("[ \"$(readlink -f /etc/epitropos/recording-recipients)\" = /etc/epitropos/recording-recipients ]")
 
     # Set up SSH key auth
     server.succeed("ssh-keygen -t ed25519 -f /tmp/test-key -N \"\"")
